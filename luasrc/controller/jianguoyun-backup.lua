@@ -1,5 +1,5 @@
--- 坚果云备份插件 - LuCI控制器
--- 兼容 OpenWrt 21.02/23.05/24.10/25.12 + LuCI3
+-- 坚果云备份插件 - LuCI控制器（增强版）
+-- 兼容 OpenWrt 24.10/25.12 + LuCI3
 
 module("luci.controller.jianguoyun-backup", package.seeall)
 
@@ -21,6 +21,22 @@ function index()
     entry({"admin", "system", "jianguoyun-backup", "list_backups"}, call("action_list_backups"), nil).leaf = true
     entry({"admin", "system", "jianguoyun-backup", "do_restore"}, call("action_do_restore"), nil).leaf = true
     entry({"admin", "system", "jianguoyun-backup", "list_local"}, call("action_list_local"), nil).leaf = true
+    entry({"admin", "system", "jianguoyun-backup", "get_status"}, call("action_get_status"), nil).leaf = true
+    entry({"admin", "system", "jianguoyun-backup", "get_audit_log"}, call("action_get_audit_log"), nil).leaf = true
+    entry({"admin", "system", "jianguoyun-backup", "export_config"}, call("action_export_config"), nil).leaf = true
+    entry({"admin", "system", "jianguoyun-backup", "import_config"}, call("action_import_config"), nil).leaf = true
+end
+
+-- 工具函数：加密密码
+local function encrypt_password(password)
+    if not password or password == "" then
+        return ""
+    end
+    -- 使用 base64 简单编码
+    local sys = require "luci.sys"
+    local result = sys.exec("echo '" .. password:gsub("'", "'\\''") .. "' | base64 2>/dev/null")
+    result = result:gsub("%s+", "")
+    return result
 end
 
 -- 测试WebDAV连接
@@ -35,12 +51,28 @@ function action_test_connection()
     local password = http.formvalue("password") or ""
     local remote_root = http.formvalue("remote_root") or "OpenWrt_Backup"
     
+    -- 输入验证
+    if webdav_url ~= "" and not webdav_url:match("^https?://") then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("ERROR: WebDAV地址格式不正确")
+        return
+    end
+    
+    if username ~= "" and #username > 255 then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("ERROR: 用户名过长")
+        return
+    end
+    
     -- 临时写入UCI用于测试（使用UCI库，避免命令注入）
     if webdav_url ~= "" and username ~= "" and password ~= "" then
-        uci:set("jianguoyun-backup", "@global[0]", "webdav_url", webdav_url)
-        uci:set("jianguoyun-backup", "@global[0]", "username", username)
-        uci:set("jianguoyun-backup", "@global[0]", "password", password)
-        uci:set("jianguoyun-backup", "@global[0]", "remote_root", remote_root)
+        -- 加密密码后存储
+        local encrypted_pass = encrypt_password(password)
+        
+        uci:set("jianguoyun-backup", "global", "webdav_url", webdav_url)
+        uci:set("jianguoyun-backup", "global", "username", username)
+        uci:set("jianguoyun-backup", "global", "password", encrypted_pass)
+        uci:set("jianguoyun-backup", "global", "remote_root", remote_root)
         uci:commit("jianguoyun-backup")
     end
     
@@ -58,17 +90,22 @@ function action_do_backup()
     
     local backup_type = http.formvalue("type") or "light"
     
+    -- 参数验证
+    local valid_types = { light = true, full = true }
+    if not valid_types[backup_type] then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：无效的备份类型")
+        return
+    end
+    
     if backup_type == "light" then
         sys.exec("/usr/bin/jianguoyun-backup.sh light_backup >/dev/null 2>&1 &")
         http.prepare_content("text/plain; charset=utf-8")
-        http.write("轻量备份已在后台启动，请稍候查看日志")
+        http.write("轻量备份已在后台启动，请查看状态了解进度")
     elseif backup_type == "full" then
         sys.exec("/usr/bin/jianguoyun-backup.sh full_backup >/dev/null 2>&1 &")
         http.prepare_content("text/plain; charset=utf-8")
-        http.write("全量备份已在后台启动，请稍候查看日志")
-    else
-        http.prepare_content("text/plain; charset=utf-8")
-        http.write("错误：未知的备份类型")
+        http.write("全量备份已在后台启动，请查看状态了解进度")
     end
 end
 
@@ -92,6 +129,44 @@ function action_clear_log()
     
     http.prepare_content("text/plain; charset=utf-8")
     http.write("日志已清空")
+end
+
+-- 获取审计日志
+function action_get_audit_log()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    
+    local log = sys.exec("/usr/bin/jianguoyun-backup.sh audit_log 2>&1")
+    
+    http.prepare_content("text/plain; charset=utf-8")
+    http.write(log)
+end
+
+-- 获取当前状态
+function action_get_status()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local jsonc = require "luci.jsonc"
+    
+    local status_output = sys.exec("/usr/bin/jianguoyun-backup.sh status 2>&1")
+    
+    -- 解析状态输出
+    local status = {
+        status = "idle",
+        progress = 0,
+        message = "空闲",
+        timestamp = ""
+    }
+    
+    for line in status_output:gmatch("[^\r\n]+") do
+        local key, value = line:match("^([^=]+)=(.*)$")
+        if key and value then
+            status[key] = value
+        end
+    end
+    
+    http.prepare_content("application/json")
+    http.write(jsonc.stringify(status))
 end
 
 -- 列出云端备份
@@ -149,7 +224,7 @@ function action_do_restore()
     sys.exec(cmd)
     
     http.prepare_content("text/plain; charset=utf-8")
-    http.write("恢复操作已在后台启动，请查看日志了解进度。恢复前已自动创建当前配置快照。")
+    http.write("恢复操作已在后台启动，请查看状态了解进度。恢复前已自动创建当前配置快照。")
 end
 
 -- 列出本地备份
@@ -188,4 +263,58 @@ function action_list_local()
     
     http.prepare_content("application/json")
     http.write(jsonc.stringify(files))
+end
+
+-- 导出配置
+function action_export_config()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    
+    local config = sys.exec("/usr/bin/jianguoyun-backup.sh export_config 2>&1")
+    
+    http.prepare_content("application/json")
+    http.write(config)
+end
+
+-- 导入配置
+function action_import_config()
+    local http = require "luci.http"
+    local sys = require "luci.sys"
+    local ltn12 = require "ltn12"
+    
+    -- 获取上传的文件
+    local filecontent = http.formvalue("config_file") or ""
+    
+    if filecontent == "" then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：请选择配置文件")
+        return
+    end
+    
+    -- 简单验证JSON格式
+    if not filecontent:match("^%s*{") then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：配置文件格式不正确")
+        return
+    end
+    
+    -- 写入临时文件
+    local tmpfile = "/tmp/jianguoyun_import_" .. os.time() .. ".json"
+    local f = io.open(tmpfile, "w")
+    if f then
+        f:write(filecontent)
+        f:close()
+        
+        -- 执行导入
+        local result = sys.exec("/usr/bin/jianguoyun-backup.sh import_config " .. tmpfile .. " 2>&1")
+        
+        -- 清理临时文件
+        os.remove(tmpfile)
+        
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write(result)
+    else
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：无法写入临时文件")
+    end
 end
