@@ -44,13 +44,13 @@ jobs:
           # OpenWrt 24.10 - IPK 格式（传统 opkg）
           - openwrt_version: '24.10'
             pkg_format: 'ipk'
-            sdk_url: 'https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz'
+            sdk_url: 'https://downloads.openwrt.org/releases/24.10.7/targets/x86/64/openwrt-sdk-24.10.7-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst'
             use_apk: 'n'
           
           # OpenWrt 25.12 - APK 格式（新包管理器）
           - openwrt_version: '25.12'
             pkg_format: 'apk'
-            sdk_url: 'https://downloads.openwrt.org/releases/25.12.0/targets/x86/64/openwrt-sdk-25.12.0-x86-64_gcc-14.2.0_musl.Linux-x86_64.tar.xz'
+            sdk_url: 'https://downloads.openwrt.org/releases/25.12.4/targets/x86/64/openwrt-sdk-25.12.4-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
             use_apk: 'y'
 
     steps:
@@ -81,13 +81,14 @@ jobs:
             subversion \
             time \
             xsltproc \
-            zlib1g-dev
+            zlib1g-dev \
+            zstd
 
       - name: Download OpenWrt SDK
         id: download_sdk
         run: |
           echo "Downloading OpenWrt ${{ matrix.openwrt_version }} SDK..."
-          wget -q ${{ matrix.sdk_url }} -O openwrt-sdk.tar.xz
+          wget -q ${{ matrix.sdk_url }} -O openwrt-sdk.tar.zst
           
           if [ $? -ne 0 ]; then
             echo "SDK download failed!"
@@ -95,7 +96,7 @@ jobs:
           fi
           
           echo "Extracting SDK..."
-          tar -xJf openwrt-sdk.tar.xz
+          tar --zstd -xf openwrt-sdk.tar.zst
           SDK_DIR=$(ls -d openwrt-sdk-* 2>/dev/null | head -1)
           echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
           echo "SDK directory: $SDK_DIR"
