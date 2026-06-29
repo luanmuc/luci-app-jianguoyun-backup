@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+# 坚果云备份插件 - init.d服务脚本
+# 用于管理定时任务，确保重启后备份计划保留
+
+START=99
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/bin/jianguoyun-backup.sh
+
+start_service() {
+    # 服务启动时设置定时任务
+    if [ -x "$PROG" ]; then
+        $PROG setup_cron >/dev/null 2>&1
+    fi
+}
+
+stop_service() {
+    # 服务停止时移除定时任务
+    sed -i '/jianguoyun-backup/d' /etc/crontabs/root 2>/dev/null
+    /etc/init.d/cron restart 2>/dev/null
+}
+
+restart() {
+    stop
+    start
+}
+
+reload() {
+    # 重新加载配置
+    if [ -x "$PROG" ]; then
+        $PROG setup_cron >/dev/null 2>&1
+    fi
+}
+
+boot() {
+    # 开机启动
+    start
+}
