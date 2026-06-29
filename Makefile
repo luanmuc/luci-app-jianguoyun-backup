@@ -22,7 +22,7 @@ define Package/$(PKG_NAME)
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=LuCI Support for Jianguoyun Backup
-  DEPENDS:=+luci-base +curl +tar
+  DEPENDS:=+luci-base +luci-compat +curl
   PKGARCH:=all
 endef
 
