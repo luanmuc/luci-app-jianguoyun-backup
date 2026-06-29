@@ -8,14 +8,23 @@ CONFIG_FILE="/etc/config/jianguoyun-backup"
 LOG_FILE="/etc/jianguoyun-backup/backup.log"
 AUDIT_LOG="/etc/jianguoyun-backup/audit.log"
 BACKUP_DIR="/tmp/jianguoyun-backup"
-LOCAL_BACKUP_DIR="/etc/jianguoyun-backup/local"
+# 本地备份目录（根据配置动态设置）
+LOCAL_BACKUP_DIR=""
+# 永久存储的本地备份目录
+PERMANENT_BACKUP_DIR="/etc/jianguoyun-backup/local"
+# 临时存储的本地备份目录
+TEMP_BACKUP_DIR="/tmp/jianguoyun-backup/local"
 LOCK_DIR="/var/run/jianguoyun-backup.lock"
 RESTORE_DIR="/tmp/jianguoyun_restore"
 SNAPSHOT_DIR="/tmp/restore_snapshot"
 STATUS_FILE="/var/run/jianguoyun-backup.status"
 
-MAX_LOG_LINES=500
-MAX_AUDIT_LINES=200
+MAX_LOG_LINES=1000
+MAX_LOG_SIZE=1048576  # 1MB
+MAX_AUDIT_LINES=500
+
+# 包管理器（自动检测）
+PKG_MANAGER=""
 MAX_LOCAL_BACKUPS=5
 MAX_REMOTE_BACKUPS=10
 CURL_RETRY=2
@@ -86,6 +95,121 @@ progress=$progress
 message=$message
 timestamp=$timestamp
 EOF
+}
+
+# ==================== 包管理器适配 ====================
+
+# 检测系统使用的包管理器（opkg 或 apk）
+detect_package_manager() {
+    if [ -n "$PKG_MANAGER" ]; then
+        return 0
+    fi
+    
+    if command -v apk >/dev/null 2>&1; then
+        PKG_MANAGER="apk"
+        log_info "检测到包管理器: apk"
+    elif command -v opkg >/dev/null 2>&1; then
+        PKG_MANAGER="opkg"
+        log_info "检测到包管理器: opkg"
+    else
+        PKG_MANAGER="unknown"
+        log_error "未检测到包管理器（opkg 或 apk）"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 列出已安装的软件包
+list_installed_packages() {
+    detect_package_manager
+    
+    case "$PKG_MANAGER" in
+        apk)
+            apk list --installed 2>/dev/null | awk '{print $1}'
+            ;;
+        opkg)
+            opkg list-installed 2>/dev/null | awk '{print $1}'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 下载软件包
+download_package() {
+    local pkg="$1"
+    local dest_dir="$2"
+    
+    detect_package_manager
+    
+    case "$PKG_MANAGER" in
+        apk)
+            apk fetch --output "$dest_dir" "$pkg" 2>/dev/null
+            ;;
+        opkg)
+            (cd "$dest_dir" && opkg download "$pkg" 2>/dev/null)
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 更新软件源索引
+update_package_index() {
+    detect_package_manager
+    
+    case "$PKG_MANAGER" in
+        apk)
+            apk update 2>/dev/null
+            ;;
+        opkg)
+            opkg update 2>/dev/null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 安装软件包
+install_package() {
+    local pkg="$1"
+    
+    detect_package_manager
+    
+    case "$PKG_MANAGER" in
+        apk)
+            apk add "$pkg" 2>/dev/null
+            ;;
+        opkg)
+            opkg install "$pkg" 2>/dev/null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# 检查软件包是否已安装
+is_package_installed() {
+    local pkg="$1"
+    
+    detect_package_manager
+    
+    case "$PKG_MANAGER" in
+        apk)
+            apk list --installed 2>/dev/null | grep -q "^${pkg} "
+            ;;
+        opkg)
+            opkg list-installed 2>/dev/null | grep -q "^${pkg} "
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 # 计算文件校验和
@@ -193,10 +317,12 @@ log() {
     local message="$2"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
-    # 限制日志行数
+    # 限制日志大小（按行数和大小双重限制）
     if [ -f "$LOG_FILE" ]; then
-        local lines=$(wc -l < "$LOG_FILE")
-        if [ "$lines" -gt "$MAX_LOG_LINES" ]; then
+        local log_size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+        local lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+        
+        if [ "$log_size" -gt "$MAX_LOG_SIZE" ] || [ "$lines" -gt "$MAX_LOG_LINES" ]; then
             tail -n "$MAX_LOG_LINES" "$LOG_FILE" > "${LOG_FILE}.tmp"
             mv "${LOG_FILE}.tmp" "$LOG_FILE"
         fi
@@ -224,9 +350,23 @@ read_config() {
     WEBDAV_PASS_ENC=$(uci -q get jianguoyun-backup.global.password)
     REMOTE_ROOT=$(uci -q get jianguoyun-backup.global.remote_root)
     MAX_REMOTE=$(uci -q get jianguoyun-backup.global.max_remote_backups)
+    BACKUP_STORAGE=$(uci -q get jianguoyun-backup.global.backup_storage)
     
     # 解密密码
     WEBDAV_PASS=$(decrypt_password "$WEBDAV_PASS_ENC")
+    
+    # 根据配置设置本地备份目录
+    case "$BACKUP_STORAGE" in
+        permanent)
+            LOCAL_BACKUP_DIR="$PERMANENT_BACKUP_DIR"
+            ;;
+        tmp|*)
+            LOCAL_BACKUP_DIR="$TEMP_BACKUP_DIR"
+            ;;
+    esac
+    
+    # 检测包管理器
+    detect_package_manager
     
     # 轻量备份定时配置
     LIGHT_ENABLED=$(uci -q get jianguoyun-backup.light_backup.enabled)
@@ -246,6 +386,7 @@ read_config() {
     [ -z "$WEBDAV_URL" ] && WEBDAV_URL="https://dav.jianguoyun.com/dav/"
     [ -z "$REMOTE_ROOT" ] && REMOTE_ROOT="OpenWrt_Backup"
     [ -z "$MAX_REMOTE" ] && MAX_REMOTE="$MAX_REMOTE_BACKUPS"
+    [ -z "$BACKUP_STORAGE" ] && BACKUP_STORAGE="tmp"
     [ -z "$LIGHT_SCHEDULE" ] && LIGHT_SCHEDULE="daily"
     [ -z "$LIGHT_TIME" ] && LIGHT_TIME="03:00"
     [ -z "$LIGHT_DAY" ] && LIGHT_DAY="0"
@@ -254,6 +395,8 @@ read_config() {
     [ -z "$FULL_TIME" ] && FULL_TIME="04:00"
     [ -z "$FULL_DAY" ] && FULL_DAY="0"
     [ -z "$FULL_DAY_MONTH" ] && FULL_DAY_MONTH="1"
+    
+    log_info "配置读取完成，本地备份存储位置: $BACKUP_STORAGE"
 }
 
 # 获取主机名和机型信息
@@ -270,6 +413,9 @@ prepare_temp_dir() {
     rm -rf "$BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"/{system_config,plugin_data,plugin_bin}
     mkdir -p "$LOCAL_BACKUP_DIR"
+    # 确保永久存储目录存在（日志文件需要）
+    mkdir -p "$PERMANENT_BACKUP_DIR"
+    mkdir -p "$(dirname "$LOG_FILE")"
 }
 
 # 清理临时文件
@@ -540,7 +686,7 @@ test_connection() {
 # 生成插件清单
 generate_plugin_list() {
     log_info "生成已安装插件清单"
-    opkg list-installed > "$BACKUP_DIR/plugin_data/plugin_list.txt" 2>/dev/null
+    list_installed_packages > "$BACKUP_DIR/plugin_data/plugin_list.txt" 2>/dev/null
     if [ $? -eq 0 ]; then
         log_info "插件清单生成成功，共 $(wc -l < "$BACKUP_DIR/plugin_data/plugin_list.txt") 个插件"
     else
@@ -601,10 +747,11 @@ backup_plugin_binaries() {
     
     mkdir -p "$BACKUP_DIR/plugin_bin"
     
-    # 获取已安装的软件包列表并下载ipk文件
-    if command -v opkg >/dev/null 2>&1; then
+    # 获取已安装的软件包列表并下载包文件
+    detect_package_manager
+    if [ "$PKG_MANAGER" != "unknown" ]; then
         mkdir -p "$BACKUP_DIR/plugin_bin/packages"
-        local pkg_list=$(opkg list-installed | awk '{print $1}')
+        local pkg_list=$(list_installed_packages)
         local count=0
         local total=$(echo "$pkg_list" | wc -l)
         
@@ -618,8 +765,8 @@ backup_plugin_binaries() {
                     ;;
             esac
             
-            # 下载ipk
-            opkg download "$pkg" -d "$BACKUP_DIR/plugin_bin/packages" 2>/dev/null
+            # 下载包文件
+            download_package "$pkg" "$BACKUP_DIR/plugin_bin/packages" 2>/dev/null
             if [ $? -eq 0 ]; then
                 count=$((count + 1))
             fi
@@ -984,7 +1131,7 @@ reinstall_plugins() {
     
     # 更新软件包列表
     log_info "更新软件包列表..."
-    opkg update 2>/dev/null
+    update_package_index
     
     local success=0
     local failed=0
@@ -995,13 +1142,13 @@ reinstall_plugins() {
         [ -z "$pkg" ] && continue
         
         # 检查是否已安装
-        if opkg list-installed | grep -q "^${pkg} "; then
+        if is_package_installed "$pkg"; then
             continue
         fi
         
         total=$((total + 1))
         
-        if opkg install "$pkg" 2>/dev/null; then
+        if install_package "$pkg"; then
             success=$((success + 1))
             log_info "安装成功: $pkg"
         else
@@ -1025,12 +1172,20 @@ offline_install_plugins() {
         return 1
     fi
     
+    detect_package_manager
+    
     local success=0
     local failed=0
     
-    for pkg_file in "$backup_dir/plugin_bin/packages"/*.ipk; do
+    # 根据包管理器确定文件扩展名
+    local pkg_ext="ipk"
+    if [ "$PKG_MANAGER" = "apk" ]; then
+        pkg_ext="apk"
+    fi
+    
+    for pkg_file in "$backup_dir/plugin_bin/packages"/*.${pkg_ext}; do
         if [ -f "$pkg_file" ]; then
-            if opkg install "$pkg_file" 2>/dev/null; then
+            if install_package "$pkg_file"; then
                 success=$((success + 1))
             else
                 failed=$((failed + 1))
