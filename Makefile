@@ -13,8 +13,6 @@ PKG_RELEASE:=1
 PKG_LICENSE:=GPL-3.0
 PKG_MAINTAINER:=OpenWrt Community
 
-PKG_ARCH:=all
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
