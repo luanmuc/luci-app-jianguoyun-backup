@@ -52,6 +52,14 @@ o.default = "10"
 o.rmempty = false
 o.description = translate("每种备份类型（轻量/全量）分别保留的云端备份数量，超出后自动删除最旧的备份，避免占用过多云端空间。")
 
+-- 本地备份存储位置
+o = s:option(ListValue, "backup_storage", translate("本地备份存储位置"))
+o:value("tmp", translate("临时空间 (/tmp，推荐)"))
+o:value("permanent", translate("永久空间 (/etc)"))
+o.default = "tmp"
+o.rmempty = false
+o.description = translate("临时空间：备份文件存放在内存中，重启后自动清除，不占用闪存空间，推荐使用。永久空间：备份文件保存在闪存中，重启后保留，适合仅本地备份不上传云端的场景。")
+
 -- 连接测试按钮
 o = s:option(Button, "_test", translate("测试WebDAV连接"))
 o.inputtitle = translate("开始测试")
