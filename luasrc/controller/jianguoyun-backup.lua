@@ -27,6 +27,7 @@ end
 function action_test_connection()
     local http = require "luci.http"
     local sys = require "luci.sys"
+    local uci = require "luci.model.uci".cursor()
     
     -- 保存配置
     local webdav_url = http.formvalue("webdav_url") or ""
@@ -34,13 +35,13 @@ function action_test_connection()
     local password = http.formvalue("password") or ""
     local remote_root = http.formvalue("remote_root") or "OpenWrt_Backup"
     
-    -- 临时写入UCI用于测试
+    -- 临时写入UCI用于测试（使用UCI库，避免命令注入）
     if webdav_url ~= "" and username ~= "" and password ~= "" then
-        sys.exec("uci set jianguoyun-backup.@global[0].webdav_url='" .. webdav_url .. "'")
-        sys.exec("uci set jianguoyun-backup.@global[0].username='" .. username .. "'")
-        sys.exec("uci set jianguoyun-backup.@global[0].password='" .. password .. "'")
-        sys.exec("uci set jianguoyun-backup.@global[0].remote_root='" .. remote_root .. "'")
-        sys.exec("uci commit jianguoyun-backup")
+        uci:set("jianguoyun-backup", "@global[0]", "webdav_url", webdav_url)
+        uci:set("jianguoyun-backup", "@global[0]", "username", username)
+        uci:set("jianguoyun-backup", "@global[0]", "password", password)
+        uci:set("jianguoyun-backup", "@global[0]", "remote_root", remote_root)
+        uci:commit("jianguoyun-backup")
     end
     
     -- 执行测试
@@ -119,8 +120,31 @@ function action_do_restore()
         return
     end
     
-    -- 后台执行恢复
-    local cmd = string.format("/usr/bin/jianguoyun-backup.sh restore '%s' '%s' '%s' >/dev/null 2>&1 &", 
+    -- 参数验证，防止命令注入
+    local valid_types = { light = true, full = true }
+    local valid_modes = { system_only = true, system_plugins = true, full_offline = true }
+    
+    if not valid_types[restore_type] then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：无效的备份类型")
+        return
+    end
+    
+    if not valid_modes[mode] then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：无效的恢复模式")
+        return
+    end
+    
+    -- 验证文件名，只允许安全字符
+    if not filename:match("^[%w%-_%.]+$") then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：文件名包含非法字符")
+        return
+    end
+    
+    -- 后台执行恢复（使用安全的参数传递方式）
+    local cmd = string.format("/usr/bin/jianguoyun-backup.sh restore %q %q %q >/dev/null 2>&1 &", 
         restore_type, filename, mode)
     sys.exec(cmd)
     
