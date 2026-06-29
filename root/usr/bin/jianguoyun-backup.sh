@@ -5,13 +5,14 @@
 
 # ==================== 基础配置 ====================
 CONFIG_FILE="/etc/config/jianguoyun-backup"
-LOG_FILE="/var/log/jianguoyun-backup.log"
+LOG_FILE="/etc/jianguoyun-backup/backup.log"
 BACKUP_DIR="/tmp/jianguoyun-backup"
 LOCAL_BACKUP_DIR="/etc/jianguoyun-backup/local"
 MAX_LOG_LINES=500
 MAX_LOCAL_BACKUPS=5
 CURL_RETRY=2
 CURL_TIMEOUT=30
+CURL_SSL_OPT="-k"
 
 # ==================== 工具函数 ====================
 
@@ -54,20 +55,25 @@ read_config() {
     LIGHT_SCHEDULE=$(uci get jianguoyun-backup.@light_backup[0].schedule 2>/dev/null)
     LIGHT_TIME=$(uci get jianguoyun-backup.@light_backup[0].time 2>/dev/null)
     LIGHT_DAY=$(uci get jianguoyun-backup.@light_backup[0].day 2>/dev/null)
+    LIGHT_DAY_MONTH=$(uci get jianguoyun-backup.@light_backup[0].day_month 2>/dev/null)
     
     # 全量备份定时配置
     FULL_ENABLED=$(uci get jianguoyun-backup.@full_backup[0].enabled 2>/dev/null)
     FULL_SCHEDULE=$(uci get jianguoyun-backup.@full_backup[0].schedule 2>/dev/null)
     FULL_TIME=$(uci get jianguoyun-backup.@full_backup[0].time 2>/dev/null)
     FULL_DAY=$(uci get jianguoyun-backup.@full_backup[0].day 2>/dev/null)
+    FULL_DAY_MONTH=$(uci get jianguoyun-backup.@full_backup[0].day_month 2>/dev/null)
     
     # 默认值
     [ -z "$REMOTE_ROOT" ] && REMOTE_ROOT="OpenWrt_Backup"
     [ -z "$LIGHT_SCHEDULE" ] && LIGHT_SCHEDULE="daily"
     [ -z "$LIGHT_TIME" ] && LIGHT_TIME="03:00"
+    [ -z "$LIGHT_DAY" ] && LIGHT_DAY="0"
+    [ -z "$LIGHT_DAY_MONTH" ] && LIGHT_DAY_MONTH="1"
     [ -z "$FULL_SCHEDULE" ] && FULL_SCHEDULE="weekly"
     [ -z "$FULL_TIME" ] && FULL_TIME="04:00"
     [ -z "$FULL_DAY" ] && FULL_DAY="0"
+    [ -z "$FULL_DAY_MONTH" ] && FULL_DAY_MONTH="1"
 }
 
 # 获取主机名和机型信息
@@ -102,7 +108,7 @@ webdav_mkdir() {
     
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
             --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
             --request MKCOL \
             --connect-timeout $CURL_TIMEOUT \
@@ -145,7 +151,7 @@ webdav_upload() {
     
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
             --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
             --upload-file "$local_file" \
             --connect-timeout $CURL_TIMEOUT \
@@ -189,7 +195,7 @@ webdav_download() {
     
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local http_code=$(curl -s -o "$local_file" -w "%{http_code}" \
+        local http_code=$(curl -s $CURL_SSL_OPT -o "$local_file" -w "%{http_code}" \
             --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
             --connect-timeout $CURL_TIMEOUT \
             --max-time $((CURL_TIMEOUT * 10)) \
@@ -234,25 +240,27 @@ webdav_list() {
     
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local result=$(curl -s \
+        local result=$(curl -s $CURL_SSL_OPT \
             --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
             --request PROPFIND \
             --header "Depth: 1" \
             --connect-timeout $CURL_TIMEOUT \
             --max-time $((CURL_TIMEOUT * 2)) \
+            -w "\n%{http_code}" \
             "$url" 2>/dev/null)
         
-        local http_code=$(echo "$?" )
+        local http_code=$(echo "$result" | tail -n1)
+        local body=$(echo "$result" | sed '$d')
         
-        if [ -n "$result" ] && echo "$result" | grep -q "D:href"; then
+        if echo "$body" | grep -q "D:href"; then
             # 解析XML提取文件名
-            echo "$result" | grep -o '<D:href>[^<]*</D:href>' | \
+            echo "$body" | grep -o '<D:href>[^<]*</D:href>' | \
                 sed 's/<D:href>//g;s/<\/D:href>//g' | \
                 sed "s|.*${remote_path}/||g" | \
                 grep -v '^$' | grep -v '/$'
             return 0
         else
-            log_error "列出目录失败 (重试 $((retry+1))/$CURL_RETRY)"
+            log_error "列出目录失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
             retry=$((retry + 1))
             sleep 2
         fi
@@ -269,7 +277,7 @@ webdav_delete() {
     
     log_info "删除远端文件: $remote_path"
     
-    local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
         --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
         --request DELETE \
         --connect-timeout $CURL_TIMEOUT \
@@ -306,7 +314,7 @@ test_connection() {
     
     # 测试认证
     local test_url="${WEBDAV_URL%/}/${REMOTE_ROOT}"
-    local http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
         --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
         --request PROPFIND \
         --header "Depth: 0" \
@@ -866,8 +874,8 @@ setup_cron() {
                 log_info "轻量备份：每周第 $LIGHT_DAY 天 $LIGHT_TIME 执行"
                 ;;
             monthly)
-                echo "$minute $hour $LIGHT_DAY * * /usr/bin/jianguoyun-backup.sh light_backup" >> /etc/crontabs/root
-                log_info "轻量备份：每月第 $LIGHT_DAY 日 $LIGHT_TIME 执行"
+                echo "$minute $hour $LIGHT_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh light_backup" >> /etc/crontabs/root
+                log_info "轻量备份：每月第 $LIGHT_DAY_MONTH 日 $LIGHT_TIME 执行"
                 ;;
         esac
     fi
@@ -888,8 +896,8 @@ setup_cron() {
                 log_info "全量备份：每周第 $FULL_DAY 天 $FULL_TIME 执行"
                 ;;
             monthly)
-                echo "$minute $hour $FULL_DAY * * /usr/bin/jianguoyun-backup.sh full_backup" >> /etc/crontabs/root
-                log_info "全量备份：每月第 $FULL_DAY 日 $FULL_TIME 执行"
+                echo "$minute $hour $FULL_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh full_backup" >> /etc/crontabs/root
+                log_info "全量备份：每月第 $FULL_DAY_MONTH 日 $FULL_TIME 执行"
                 ;;
         esac
     fi
