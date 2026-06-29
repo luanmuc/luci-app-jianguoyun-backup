@@ -158,8 +158,10 @@ function action_list_local()
     local sys = require "luci.sys"
     local nixio = require "nixio"
     local jsonc = require "luci.jsonc"
+    local uci = require "luci.model.uci".cursor()
     
-    local backup_dir = "/etc/jianguoyun-backup/local"
+    -- 从UCI配置读取本地备份目录
+    local backup_dir = uci:get("jianguoyun-backup", "global", "local_backup_dir") or "/etc/jianguoyun-backup/local"
     local files = {}
     
     -- 检查目录是否存在
