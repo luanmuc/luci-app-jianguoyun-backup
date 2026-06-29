@@ -116,12 +116,15 @@ jobs:
           echo "Plugin source structure:"
           ls -laR ${{ env.SDK_DIR }}/package/${{ env.PLUGIN_NAME }}/
 
+      - name: Update feeds
+        run: |
+          cd ${{ env.SDK_DIR }}
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Configure build
         run: |
           cd ${{ env.SDK_DIR }}
-          
-          # 生成默认配置
-          make defconfig
           
           # 设置包格式
           echo "CONFIG_USE_APK=${{ matrix.use_apk }}" >> .config
@@ -129,18 +132,12 @@ jobs:
           # 启用插件（编译为模块）
           echo "CONFIG_PACKAGE_${{ env.PLUGIN_NAME }}=m" >> .config
           
-          # 重新生成配置
+          # 生成默认配置
           make defconfig
           
           # 验证配置
           echo "Build configuration:"
           grep -E "(CONFIG_USE_APK|CONFIG_PACKAGE_${{ env.PLUGIN_NAME }})" .config
-
-      - name: Update feeds
-        run: |
-          cd ${{ env.SDK_DIR }}
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
 
       - name: Build plugin
         id: build
