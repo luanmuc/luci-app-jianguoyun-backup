@@ -1,45 +1,43 @@
 #!/bin/sh
 # 坚果云备份插件 - UCI默认配置脚本
-# 安装时自动执行，初始化配置和服务
+# 安装时自动执行，初始化配置文件
 
 [ -n "$IPKG_INSTROOT" ] && {
     # 安装阶段，不执行实际操作
     exit 0
 }
 
-# 确保配置文件存在
-if [ ! -f /etc/config/jianguoyun-backup ]; then
-    touch /etc/config/jianguoyun-backup
+# 确保配置节存在（不存在则创建）
+uci -q get jianguoyun-backup.global >/dev/null || {
     uci set jianguoyun-backup.global=global
     uci set jianguoyun-backup.global.webdav_url='https://dav.jianguoyun.com/dav/'
     uci set jianguoyun-backup.global.username=''
     uci set jianguoyun-backup.global.password=''
     uci set jianguoyun-backup.global.remote_root='OpenWrt_Backup'
-    
+    uci set jianguoyun-backup.global.max_remote_backups='10'
+}
+
+uci -q get jianguoyun-backup.light_backup >/dev/null || {
     uci set jianguoyun-backup.light_backup=light_backup
     uci set jianguoyun-backup.light_backup.enabled='0'
     uci set jianguoyun-backup.light_backup.schedule='daily'
     uci set jianguoyun-backup.light_backup.time='03:00'
     uci set jianguoyun-backup.light_backup.day='0'
     uci set jianguoyun-backup.light_backup.day_month='1'
-    
+}
+
+uci -q get jianguoyun-backup.full_backup >/dev/null || {
     uci set jianguoyun-backup.full_backup=full_backup
     uci set jianguoyun-backup.full_backup.enabled='0'
     uci set jianguoyun-backup.full_backup.schedule='weekly'
     uci set jianguoyun-backup.full_backup.time='04:00'
     uci set jianguoyun-backup.full_backup.day='0'
     uci set jianguoyun-backup.full_backup.day_month='1'
-    
-    uci commit jianguoyun-backup
-fi
+}
 
-# 创建本地备份目录
+uci commit jianguoyun-backup
+
+# 创建本地备份和日志目录
 mkdir -p /etc/jianguoyun-backup/local
-
-# 启用并启动服务
-if [ -x /etc/init.d/jianguoyun-backup ]; then
-    /etc/init.d/jianguoyun-backup enable
-    /etc/init.d/jianguoyun-backup start
-fi
 
 exit 0
