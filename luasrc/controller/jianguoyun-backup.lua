@@ -157,6 +157,7 @@ function action_list_local()
     local http = require "luci.http"
     local sys = require "luci.sys"
     local nixio = require "nixio"
+    local jsonc = require "luci.jsonc"
     
     local backup_dir = "/etc/jianguoyun-backup/local"
     local files = {}
@@ -184,5 +185,5 @@ function action_list_local()
     end)
     
     http.prepare_content("application/json")
-    http.write(luci.jsonc.stringify(files))
+    http.write(jsonc.stringify(files))
 end
