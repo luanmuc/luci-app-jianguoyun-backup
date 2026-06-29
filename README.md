@@ -23,6 +23,20 @@
 - WebDAV 上传严格校验 HTTP 状态码
 - 网络超时自动重试 2 次
 - 完整的日志记录系统
+- **密码加密存储**：应用密码 base64 编码存储，避免明文
+- **操作审计日志**：记录所有操作，便于追溯
+- **备份完整性校验**：MD5 校验和，确保备份文件完整
+
+### 智能管理
+- **云端自动清理**：可配置保留数量，自动删除旧备份
+- **本地存储优化**：支持临时空间（/tmp）和永久空间两种模式
+- **配置导入导出**：JSON 格式，便于备份和迁移配置
+- **双包管理器支持**：同时兼容 opkg（24.10）和 apk（25.12）
+
+### 用户体验
+- **进度状态查询**：可查看当前备份/恢复进度
+- **详细帮助文档**：每个配置项都有清晰说明
+- **完善的卸载机制**：自动清理服务、定时任务、缓存
 
 ### 界面美观
 - 深度适配 Argon 主题
@@ -137,7 +151,8 @@ luci-app-jianguoyun-backup/
 ├── README.md                   # 说明文档
 ├── .github/
 │   └── workflows/
-│       └── build.yml           # GitHub Actions 云编译工作流
+│       ├── build-24.10.yml     # OpenWrt 24.10 (IPK) 编译工作流
+│       └── build-25.12.yml     # OpenWrt 25.12 (APK) 编译工作流
 ├── luasrc/
 │   ├── controller/
 │   │   └── jianguoyun-backup.lua    # LuCI 控制器
@@ -170,6 +185,10 @@ luci-app-jianguoyun-backup/
 - `setup_cron` - 设置定时任务
 - `log` - 查看运行日志
 - `clear_log` - 清空日志
+- `audit_log` - 查看审计日志
+- `status` - 查看当前操作状态
+- `export_config` - 导出配置为 JSON
+- `import_config` - 从 JSON 文件导入配置
 
 ### 备份文件命名规则
 ```
@@ -191,6 +210,10 @@ OpenWrt_Backup/
 - **传输**：WebDAV 协议（curl）
 - **依赖**：仅使用系统自带 curl、tar、uci、sysupgrade
 - **架构**：PKGARCH:=all，全平台通用，无二进制文件
+
+## 卸载说明
+
+请参考 [UNINSTALL.md](UNINSTALL.md) 了解详细的卸载方法和注意事项。
 
 ## 常见问题
 
