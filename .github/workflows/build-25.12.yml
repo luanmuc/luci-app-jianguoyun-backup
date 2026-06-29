@@ -336,6 +336,23 @@ jobs:
             exit 1
           fi
           
+          # 重命名包文件为更友好的名称
+          echo ""
+          echo "重命名包文件为友好名称..."
+          cd ${{ github.workspace }}/output
+          for pkg in *.${{ env.PKG_FORMAT }}; do
+            NEW_NAME="${{ env.PLUGIN_NAME }}_${{ env.OPENWRT_VERSION }}_all.${{ env.PKG_FORMAT }}"
+            if [ "$pkg" != "$NEW_NAME" ]; then
+              echo "  重命名: $pkg -> $NEW_NAME"
+              mv "$pkg" "$NEW_NAME"
+            fi
+          done
+          cd - > /dev/null
+          
+          echo ""
+          echo "最终输出文件列表:"
+          ls -lh ${{ github.workspace }}/output/
+          echo ""
           echo "✅ 包文件查找完成"
           echo ""
           echo "=========================================="
@@ -383,83 +400,61 @@ jobs:
         run: |
           echo ""
           echo "=========================================="
-          echo "  ✅ 编译完成！安装包已上传到 Artifacts"
+          echo "  ✅ 编译完成！"
           echo "=========================================="
           echo ""
-          echo "📦 编译信息:"
-          echo "  OpenWrt 版本: ${{ env.OPENWRT_VERSION }}"
-          echo "  包格式: ${{ env.PKG_FORMAT }}"
-          echo "  架构: all (纯脚本通用包)"
-          echo "  Artifact 名称: ${{ env.PLUGIN_NAME }}_25.12_apk_all"
-          echo "  保留天数: 90 天"
+          echo "📦 安装包已发布到 Releases 页面"
+          echo "📍 位置：仓库主页 → Releases"
+          echo "🔍 找到：OpenWrt 25.12 最新版"
+          echo "📥 直接下载即可使用"
           echo ""
-          echo "📥 下载位置说明："
-          echo "  方法一（推荐）："
-          echo "    1. 点击页面顶部的 'Summary' 选项卡"
-          echo "    2. 向下滚动找到 'Artifacts' 部分"
-          echo "    3. 点击 '${{ env.PLUGIN_NAME }}_25.12_apk_all' 下载"
-          echo ""
-          echo "  方法二："
-          echo "    1. 在 Actions 页面找到本次运行记录"
-          echo "    2. 点击进入详情页"
-          echo "    3. 在页面底部的 Artifacts 区域下载"
-          echo ""
-          echo "🏷️  Release 发布说明："
-          echo "  打 tag (如 v1.0.0) 推送时会自动创建 GitHub Release"
-          echo "  Release 中会包含编译好的安装包文件"
+          echo "文件名：${{ env.PLUGIN_NAME }}_25.12_all.apk"
           echo ""
           echo "=========================================="
           echo ""
 
-  release:
-    name: Create Release (25.12)
+
+  release-latest:
+    name: 发布到 Releases (25.12)
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # 所有触发方式都发布最新版（push、手动、定时）
+    if: always() && needs.build.result == 'success'
     
     steps:
-      - name: Download artifact
+      - name: 下载编译好的安装包
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.PLUGIN_NAME }}_25.12_apk_all
-          path: release
-          
-      - name: Prepare release files
+          path: release-pkg
+      
+      - name: 生成发布说明
         run: |
-          cd release
+          cd release-pkg
           
-          # 生成发布说明
-          echo "## 坚果云备份插件 - OpenWrt 25.12" > RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "**版本**: ${{ github.ref_name }}" >> RELEASE_NOTES.md
-          echo "**格式**: APK (新包管理器格式)" >> RELEASE_NOTES.md
-          echo "**架构**: all (纯脚本，全架构通用)" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "### 安装包列表" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
+          echo "## 坚果云备份插件 - OpenWrt 25.12" > RELEASE_NOTES_LATEST.md
+          echo "" >> RELEASE_NOTES_LATEST.md
+          echo "更新时间: $(date '+%Y-%m-%d %H:%M')" >> RELEASE_NOTES_LATEST.md
+          echo "" >> RELEASE_NOTES_LATEST.md
+          echo "### 安装包" >> RELEASE_NOTES_LATEST.md
+          echo "" >> RELEASE_NOTES_LATEST.md
           
           ls -1 *.apk 2>/dev/null | while read f; do
             SIZE=$(du -h "$f" | cut -f1)
-            echo "- **$f** ($SIZE)" >> RELEASE_NOTES.md
+            echo "- $f ($SIZE)" >> RELEASE_NOTES_LATEST.md
           done
-          
-          echo "" >> RELEASE_NOTES.md
-          echo "### 安装说明" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "1. 下载 apk 文件到路由器" >> RELEASE_NOTES.md
-          echo "2. 执行命令：\`opkg install luci-app-jianguoyun-backup_*.apk\`" >> RELEASE_NOTES.md
-          echo "3. 登录 LuCI 管理界面，在 '系统' 菜单中找到 '坚果云备份'" >> RELEASE_NOTES.md
           echo ""
           
-          echo "Release files:"
           ls -la
       
-      - name: Create Release
+      - name: 发布到 Releases（最新版）
         uses: softprops/action-gh-release@v1
         with:
-          files: release/*.apk
-          generate_release_notes: true
-          body_path: release/RELEASE_NOTES.md
-          name: "OpenWrt 25.12 - ${{ github.ref_name }}"
+          tag_name: latest-25.12
+          name: "OpenWrt 25.12 最新版"
+          body_path: release-pkg/RELEASE_NOTES_LATEST.md
+          files: release-pkg/*.apk
+                    draft: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
