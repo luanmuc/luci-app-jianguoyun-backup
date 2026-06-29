@@ -1,0 +1,525 @@
+<%+header%>
+<%+header_status%>
+
+<style type="text/css">
+/* 坚果云备份插件 - 运行日志页面样式
+   深度适配Argon主题，兼容bootstrap、material */
+
+.log-container {
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+.log-card {
+    background: var(--card-bg, #ffffff);
+    border-radius: var(--card-radius, 12px);
+    box-shadow: var(--card-shadow, 0 2px 12px rgba(0,0,0,0.08));
+    padding: 24px;
+    margin-bottom: 20px;
+    border: 1px solid var(--card-border, #e5e7eb);
+}
+
+.log-card-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary, #1f2937);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.log-card-title .icon {
+    width: 24px;
+    height: 24px;
+    color: var(--primary-color, #3b82f6);
+}
+
+.log-card-desc {
+    font-size: 14px;
+    color: var(--text-secondary, #6b7280);
+    margin-bottom: 20px;
+    line-height: 1.6;
+}
+
+.log-actions {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.btn-log {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+}
+
+.btn-log-primary {
+    background: var(--primary-color, #3b82f6);
+    color: white;
+}
+
+.btn-log-primary:hover {
+    background: var(--primary-hover, #2563eb);
+}
+
+.btn-log-danger {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.btn-log-danger:hover {
+    background: #fecaca;
+}
+
+.btn-log-secondary {
+    background: var(--secondary-bg, #f3f4f6);
+    color: var(--text-primary, #1f2937);
+    border: 1px solid var(--border-color, #e5e7eb);
+}
+
+.btn-log-secondary:hover {
+    background: var(--secondary-hover, #e5e7eb);
+}
+
+.btn-log:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 日志内容区域 */
+.log-content {
+    background: #1e293b;
+    border-radius: 10px;
+    padding: 16px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #e2e8f0;
+    max-height: 500px;
+    overflow-y: auto;
+    border: 1px solid #334155;
+}
+
+.log-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.log-content::-webkit-scrollbar-track {
+    background: #1e293b;
+    border-radius: 4px;
+}
+
+.log-content::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 4px;
+}
+
+.log-content::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+}
+
+/* 日志行样式 */
+.log-line {
+    margin-bottom: 2px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.log-time {
+    color: #94a3b8;
+}
+
+.log-level-info {
+    color: #60a5fa;
+}
+
+.log-level-success {
+    color: #4ade80;
+}
+
+.log-level-error {
+    color: #f87171;
+}
+
+.log-level-warning {
+    color: #fbbf24;
+}
+
+/* 空状态 */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #64748b;
+}
+
+.empty-state-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+}
+
+/* 状态消息 */
+.status-message {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-top: 16px;
+    font-size: 14px;
+    display: none;
+}
+
+.status-success {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    display: block;
+}
+
+.status-error {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+    display: block;
+}
+
+.status-info {
+    background: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+    display: block;
+}
+
+.loading-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 自动刷新开关 */
+.auto-refresh {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .3s;
+    border-radius: 22px;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+
+input:checked + .slider {
+    background-color: var(--primary-color, #3b82f6);
+}
+
+input:checked + .slider:before {
+    transform: translateX(18px);
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+    .log-card {
+        padding: 16px;
+    }
+    
+    .log-actions {
+        flex-direction: column;
+    }
+    
+    .btn-log {
+        width: 100%;
+        justify-content: center;
+    }
+    
+    .auto-refresh {
+        margin-left: 0;
+        width: 100%;
+        justify-content: center;
+    }
+    
+    .log-content {
+        font-size: 12px;
+        max-height: 400px;
+    }
+}
+</style>
+
+<div class="log-container">
+    <!-- 运行日志卡片 -->
+    <div class="log-card">
+        <div class="log-card-title">
+            <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            运行日志
+            <div class="auto-refresh">
+                <label class="switch">
+                    <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+                    <span class="slider"></span>
+                </label>
+                <span>自动刷新</span>
+            </div>
+        </div>
+        <div class="log-card-desc">
+            记录所有备份、恢复、上传下载操作的详细日志，便于排查问题。日志最多保留500行。
+        </div>
+        
+        <div class="log-actions">
+            <button class="btn-log btn-log-primary" onclick="loadLog()" id="btnRefresh">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                刷新日志
+            </button>
+            <button class="btn-log btn-log-secondary" onclick="scrollToBottom()" id="btnBottom">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+                </svg>
+                跳到底部
+            </button>
+            <button class="btn-log btn-log-danger" onclick="clearLog()" id="btnClear">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                清空日志
+            </button>
+        </div>
+
+        <div id="logContent" class="log-content">
+            <div class="empty-state">
+                <div class="empty-state-icon">📋</div>
+                <div>加载中...</div>
+            </div>
+        </div>
+
+        <div id="logStatus" class="status-message"></div>
+    </div>
+
+    <!-- 日志说明卡片 -->
+    <div class="log-card">
+        <div class="log-card-title">
+            <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            日志说明
+        </div>
+        <div class="log-card-desc">
+            <ul style="margin: 0; padding-left: 20px; line-height: 2;">
+                <li><span style="color: #60a5fa;">INFO</span> - 普通信息日志</li>
+                <li><span style="color: #4ade80;">SUCCESS</span> - 操作成功日志</li>
+                <li><span style="color: #f87171;">ERROR</span> - 错误日志，需关注</li>
+                <li>日志文件路径：<code style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">/var/log/jianguoyun-backup.log</code></li>
+                <li>本地备份文件路径：<code style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px;">/etc/jianguoyun-backup/local/</code></li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+var autoRefreshInterval = null;
+var AUTO_REFRESH_INTERVAL = 5000; // 5秒
+
+// 加载日志
+function loadLog() {
+    var btnRefresh = document.getElementById('btnRefresh');
+    var logContent = document.getElementById('logContent');
+    var statusDiv = document.getElementById('logStatus');
+    
+    btnRefresh.disabled = true;
+    btnRefresh.innerHTML = '<span class="loading-spinner"></span> 加载中';
+    statusDiv.className = 'status-message';
+    statusDiv.style.display = 'none';
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '<%=luci.dispatcher.build_url("admin/system/jianguoyun-backup/get_log")%>', true);
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            btnRefresh.disabled = false;
+            btnRefresh.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> 刷新日志';
+            
+            if (xhr.status === 200) {
+                renderLog(xhr.responseText);
+            } else {
+                logContent.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⚠️</div><div>加载失败</div></div>';
+            }
+        }
+    };
+    
+    xhr.send();
+}
+
+// 渲染日志
+function renderLog(text) {
+    var logContent = document.getElementById('logContent');
+    
+    if (!text || text.trim() === '' || text.indexOf('暂无日志记录') !== -1) {
+        logContent.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div>暂无日志记录</div></div>';
+        return;
+    }
+    
+    var lines = text.trim().split('\n');
+    var html = '';
+    
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        var formattedLine = formatLogLine(line);
+        html += '<div class="log-line">' + formattedLine + '</div>';
+    }
+    
+    logContent.innerHTML = html;
+    
+    // 自动滚动到底部
+    scrollToBottom();
+}
+
+// 格式化日志行
+function formatLogLine(line) {
+    // 匹配 [时间] [级别] 内容 的格式
+    var match = line.match(/^\[([^\]]+)\] \[([^\]]+)\] (.*)$/);
+    
+    if (match) {
+        var time = match[1];
+        var level = match[2].toUpperCase();
+        var content = match[3];
+        
+        var levelClass = 'log-level-info';
+        if (level === 'SUCCESS') levelClass = 'log-level-success';
+        else if (level === 'ERROR') levelClass = 'log-level-error';
+        else if (level === 'WARNING' || level === 'WARN') levelClass = 'log-level-warning';
+        
+        return '<span class="log-time">[' + escapeHtml(time) + ']</span> ' +
+               '<span class="' + levelClass + '">[' + escapeHtml(level) + ']</span> ' +
+               escapeHtml(content);
+    }
+    
+    // 普通行
+    return escapeHtml(line);
+}
+
+// 清空日志
+function clearLog() {
+    if (!confirm('确定要清空所有日志吗？此操作不可恢复。')) {
+        return;
+    }
+    
+    var btnClear = document.getElementById('btnClear');
+    var statusDiv = document.getElementById('logStatus');
+    
+    btnClear.disabled = true;
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '<%=luci.dispatcher.build_url("admin/system/jianguoyun-backup/clear_log")%>', true);
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            btnClear.disabled = false;
+            
+            if (xhr.status === 200) {
+                statusDiv.className = 'status-message status-success';
+                statusDiv.textContent = '日志已清空';
+                statusDiv.style.display = 'block';
+                loadLog();
+            } else {
+                statusDiv.className = 'status-message status-error';
+                statusDiv.textContent = '清空失败，请重试';
+                statusDiv.style.display = 'block';
+            }
+            
+            // 3秒后隐藏状态
+            setTimeout(function() {
+                statusDiv.style.display = 'none';
+            }, 3000);
+        }
+    };
+    
+    xhr.send();
+}
+
+// 滚动到底部
+function scrollToBottom() {
+    var logContent = document.getElementById('logContent');
+    logContent.scrollTop = logContent.scrollHeight;
+}
+
+// 切换自动刷新
+function toggleAutoRefresh() {
+    var checkbox = document.getElementById('autoRefresh');
+    
+    if (checkbox.checked) {
+        // 开启自动刷新
+        autoRefreshInterval = setInterval(loadLog, AUTO_REFRESH_INTERVAL);
+    } else {
+        // 关闭自动刷新
+        if (autoRefreshInterval) {
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = null;
+        }
+    }
+}
+
+// HTML转义
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 页面加载完成后加载日志
+document.addEventListener('DOMContentLoaded', function() {
+    loadLog();
+});
+</script>
+
+<%+footer%>
