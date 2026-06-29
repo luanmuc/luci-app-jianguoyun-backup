@@ -8,11 +8,50 @@ CONFIG_FILE="/etc/config/jianguoyun-backup"
 LOG_FILE="/etc/jianguoyun-backup/backup.log"
 BACKUP_DIR="/tmp/jianguoyun-backup"
 LOCAL_BACKUP_DIR="/etc/jianguoyun-backup/local"
+LOCK_FILE="/var/run/jianguoyun-backup.lock"
+RESTORE_DIR="/tmp/jianguoyun_restore"
+SNAPSHOT_DIR="/tmp/restore_snapshot"
 MAX_LOG_LINES=500
 MAX_LOCAL_BACKUPS=5
 CURL_RETRY=2
 CURL_TIMEOUT=30
 CURL_SSL_OPT="-k"
+
+# ==================== 锁文件与清理机制 ====================
+
+# 获取锁（防止并发执行）
+acquire_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log_error "另一个备份/恢复进程正在运行 (PID: $pid)，请稍后再试"
+            return 1
+        else
+            # 锁文件存在但进程已死，清理旧锁
+            log_info "清理过期的锁文件"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+    return 0
+}
+
+# 释放锁
+release_lock() {
+    rm -f "$LOCK_FILE"
+}
+
+# 清理临时文件（异常退出时也会执行）
+cleanup_temp_files() {
+    rm -rf "$BACKUP_DIR"
+    rm -rf "$RESTORE_DIR"
+    rm -rf "$SNAPSHOT_DIR"
+    rm -f "/tmp/.webdav_test_$$"
+    release_lock
+}
+
+# 设置 trap，确保异常退出时清理
+trap cleanup_temp_files EXIT INT TERM HUP
 
 # ==================== 工具函数 ====================
 
@@ -277,27 +316,38 @@ webdav_delete() {
     
     log_info "删除远端文件: $remote_path"
     
-    local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
-        --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
-        --request DELETE \
-        --connect-timeout $CURL_TIMEOUT \
-        --max-time $((CURL_TIMEOUT * 2)) \
-        "$url" 2>/dev/null)
+    local retry=0
+    while [ "$retry" -le "$CURL_RETRY" ]; do
+        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}" \
+            --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
+            --request DELETE \
+            --connect-timeout $CURL_TIMEOUT \
+            --max-time $((CURL_TIMEOUT * 2)) \
+            "$url" 2>/dev/null)
+        
+        case "$http_code" in
+            200|204)
+                log_info "文件删除成功: $remote_path"
+                return 0
+                ;;
+            404)
+                log_info "文件不存在: $remote_path"
+                return 0
+                ;;
+            401)
+                log_error "认证失败，请检查账号密码"
+                return 1
+                ;;
+            *)
+                log_error "删除文件失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep 2
+                ;;
+        esac
+    done
     
-    case "$http_code" in
-        200|204)
-            log_info "文件删除成功: $remote_path"
-            return 0
-            ;;
-        404)
-            log_info "文件不存在: $remote_path"
-            return 0
-            ;;
-        *)
-            log_error "删除文件失败，HTTP状态码: $http_code"
-            return 1
-            ;;
-    esac
+    log_error "删除文件失败，已达最大重试次数"
+    return 1
 }
 
 # ==================== 连接测试 ====================
@@ -600,14 +650,14 @@ create_snapshot() {
     get_device_info
     local snapshot_file="$LOCAL_BACKUP_DIR/snapshot_${TIMESTAMP}.tar.gz"
     
-    mkdir -p /tmp/restore_snapshot
-    cp -a /etc/config /tmp/restore_snapshot/ 2>/dev/null
+    mkdir -p "$SNAPSHOT_DIR"
+    cp -a /etc/config "$SNAPSHOT_DIR/" 2>/dev/null
     
-    cd /tmp/restore_snapshot
+    cd "$SNAPSHOT_DIR"
     tar czf "$snapshot_file" config 2>/dev/null
     cd /
     
-    rm -rf /tmp/restore_snapshot
+    rm -rf "$SNAPSHOT_DIR"
     
     if [ -s "$snapshot_file" ]; then
         log_success "配置快照已保存: $snapshot_file"
@@ -634,6 +684,29 @@ list_remote_backups() {
 download_backup() {
     local type="$1"
     local filename="$2"
+    
+    # 参数验证 - 防止路径遍历和注入
+    case "$type" in
+        light|full) ;;
+        *)
+            echo "错误：无效的备份类型"
+            return 1
+            ;;
+    esac
+    
+    # 验证文件名，只允许安全字符，防止路径遍历
+    if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+        echo "错误：文件名包含非法字符"
+        return 1
+    fi
+    
+    # 额外检查：禁止路径遍历字符
+    case "$filename" in
+        *..*|*/*|*\$*|*\`*)
+            echo "错误：文件名包含非法字符"
+            return 1
+            ;;
+    esac
     
     read_config
     
@@ -785,6 +858,38 @@ do_restore() {
     local filename="$2"
     local mode="$3"
     
+    # 参数验证 - 防止路径遍历和注入
+    case "$type" in
+        light|full) ;;
+        *)
+            log_error "无效的备份类型: $type"
+            return 1
+            ;;
+    esac
+    
+    # 验证文件名，只允许安全字符，防止路径遍历
+    if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+        log_error "文件名包含非法字符"
+        return 1
+    fi
+    
+    # 额外检查：禁止路径遍历字符
+    case "$filename" in
+        *..*|*/*|*\$*|*\`*)
+            log_error "文件名包含非法字符"
+            return 1
+            ;;
+    esac
+    
+    # 验证恢复模式
+    case "$mode" in
+        system_only|system_plugins|full_offline) ;;
+        *)
+            log_error "无效的恢复模式: $mode"
+            return 1
+            ;;
+    esac
+    
     log_info "========== 开始恢复 =========="
     log_info "备份类型: $type, 文件: $filename, 模式: $mode"
     
@@ -800,16 +905,15 @@ do_restore() {
     fi
     
     # 解压备份包
-    local restore_dir="/tmp/jianguoyun_restore"
-    rm -rf "$restore_dir"
-    mkdir -p "$restore_dir"
+    rm -rf "$RESTORE_DIR"
+    mkdir -p "$RESTORE_DIR"
     
     log_info "解压备份文件..."
-    tar xzf "$local_file" -C "$restore_dir" 2>/dev/null
+    tar xzf "$local_file" -C "$RESTORE_DIR" 2>/dev/null
     
     if [ $? -ne 0 ]; then
         log_error "备份文件解压失败"
-        rm -rf "$restore_dir"
+        rm -rf "$RESTORE_DIR"
         return 1
     fi
     
@@ -817,29 +921,29 @@ do_restore() {
     case "$mode" in
         system_only)
             # 仅恢复系统配置
-            restore_system_config "$restore_dir"
+            restore_system_config "$RESTORE_DIR"
             ;;
         system_plugins)
             # 恢复系统+插件配置，并重装插件
-            restore_system_config "$restore_dir"
-            restore_plugin_config "$restore_dir"
-            reinstall_plugins "$restore_dir"
+            restore_system_config "$RESTORE_DIR"
+            restore_plugin_config "$RESTORE_DIR"
+            reinstall_plugins "$RESTORE_DIR"
             ;;
         full_offline)
             # 全量离线恢复
-            restore_system_config "$restore_dir"
-            restore_plugin_config "$restore_dir"
-            offline_install_plugins "$restore_dir"
+            restore_system_config "$RESTORE_DIR"
+            restore_plugin_config "$RESTORE_DIR"
+            offline_install_plugins "$RESTORE_DIR"
             ;;
         *)
             log_error "未知的恢复模式: $mode"
-            rm -rf "$restore_dir"
+            rm -rf "$RESTORE_DIR"
             return 1
             ;;
     esac
     
     # 清理
-    rm -rf "$restore_dir"
+    rm -rf "$RESTORE_DIR"
     rm -f "$local_file"
     
     log_success "========== 恢复操作完成 =========="
@@ -938,9 +1042,11 @@ case "$1" in
         test_connection
         ;;
     light_backup)
+        acquire_lock || exit 1
         do_light_backup
         ;;
     full_backup)
+        acquire_lock || exit 1
         do_full_backup
         ;;
     list)
@@ -950,6 +1056,7 @@ case "$1" in
         download_backup "$2" "$3"
         ;;
     restore)
+        acquire_lock || exit 1
         do_restore "$2" "$3" "$4"
         ;;
     setup_cron)
