@@ -34,6 +34,11 @@ define Package/$(PKG_NAME)/description
   - One-click restore with snapshot protection
   - Complete logging system
   - Pure shell implementation, no extra dependencies
+  - MD5 checksum verification
+  - Config import/export
+  - Audit logging
+  - Auto cleanup old backups
+  - Progress display
 endef
 
 define Build/Prepare
@@ -82,11 +87,18 @@ endef
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 创建必要的目录
+	mkdir -p /etc/jianguoyun-backup/local
+	
+	# 启用并启动服务
 	if [ -x /etc/init.d/jianguoyun-backup ]; then
 		/etc/init.d/jianguoyun-backup enable
 		/etc/init.d/jianguoyun-backup start
 	fi
+	
+	# 清理 LuCI 缓存
 	rm -f /tmp/luci-indexcache
+	rm -rf /tmp/luci-modulecache/
 fi
 exit 0
 endef
@@ -94,9 +106,64 @@ endef
 define Package/$(PKG_NAME)/prerm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 停止并禁用服务
 	if [ -x /etc/init.d/jianguoyun-backup ]; then
 		/etc/init.d/jianguoyun-backup stop
 		/etc/init.d/jianguoyun-backup disable
+	fi
+	
+	# 清理定时任务
+	if [ -f /etc/crontabs/root ]; then
+		sed -i '/jianguoyun-backup/d' /etc/crontabs/root
+		# 重启 cron 服务使更改生效
+		if [ -x /etc/init.d/cron ]; then
+			/etc/init.d/cron restart 2>/dev/null
+		fi
+	fi
+	
+	# 清理运行时文件（锁文件、状态文件、临时文件）
+	rm -rf /var/run/jianguoyun-backup.lock
+	rm -f /var/run/jianguoyun-backup.status
+	rm -rf /tmp/jianguoyun-backup
+	rm -rf /tmp/jianguoyun_restore
+	rm -rf /tmp/restore_snapshot
+	rm -f /tmp/.webdav_test_*
+	rm -f /tmp/jianguoyun_import_*.json
+fi
+exit 0
+endef
+
+define Package/$(PKG_NAME)/postrm
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 清理 LuCI 缓存
+	rm -f /tmp/luci-indexcache
+	rm -rf /tmp/luci-modulecache/
+	
+	# 交互式环境下显示提示信息
+	if [ -t 1 ]; then
+		echo ""
+		echo "========================================"
+		echo "  坚果云备份插件已卸载"
+		echo "========================================"
+		echo ""
+		echo "  ✅ 已自动清理："
+		echo "     • 服务已停止并禁用"
+		echo "     • 定时任务已移除"
+		echo "     • 运行时临时文件已清理"
+		echo "     • LuCI 缓存已刷新"
+		echo ""
+		echo "  📁 以下用户数据已保留："
+		echo "     • /etc/jianguoyun-backup/"
+		echo "       ├── backup.log      (运行日志)"
+		echo "       ├── audit.log       (审计日志)"
+		echo "       └── local/          (本地备份文件)"
+		echo "     • /etc/config/jianguoyun-backup (UCI 配置)"
+		echo ""
+		echo "  🗑️  如需完全清理所有数据，请执行："
+		echo "     rm -rf /etc/jianguoyun-backup/"
+		echo "     rm -f /etc/config/jianguoyun-backup"
+		echo ""
 	fi
 fi
 exit 0
