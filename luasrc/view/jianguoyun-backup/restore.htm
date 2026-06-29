@@ -1,0 +1,758 @@
+<%+header%>
+<%+header_status%>
+
+<style type="text/css">
+/* 坚果云备份插件 - 云端恢复页面样式
+   深度适配Argon主题，兼容bootstrap、material */
+
+.restore-container {
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+.restore-card {
+    background: var(--card-bg, #ffffff);
+    border-radius: var(--card-radius, 12px);
+    box-shadow: var(--card-shadow, 0 2px 12px rgba(0,0,0,0.08));
+    padding: 24px;
+    margin-bottom: 20px;
+    border: 1px solid var(--card-border, #e5e7eb);
+}
+
+.restore-card-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary, #1f2937);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.restore-card-title .icon {
+    width: 24px;
+    height: 24px;
+    color: var(--primary-color, #3b82f6);
+}
+
+.restore-card-desc {
+    font-size: 14px;
+    color: var(--text-secondary, #6b7280);
+    margin-bottom: 20px;
+    line-height: 1.6;
+}
+
+/* 备份类型标签页 */
+.backup-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-color, #e5e7eb);
+    padding-bottom: 0;
+}
+
+.tab-btn {
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary, #6b7280);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: -1px;
+}
+
+.tab-btn:hover {
+    color: var(--text-primary, #1f2937);
+}
+
+.tab-btn.active {
+    color: var(--primary-color, #3b82f6);
+    border-bottom-color: var(--primary-color, #3b82f6);
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* 备份文件列表 */
+.backup-files-list {
+    margin-top: 16px;
+}
+
+.backup-file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    background: var(--bg-secondary, #f9fafb);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.backup-file-item:hover {
+    border-color: var(--primary-color, #3b82f6);
+    background: #eff6ff;
+}
+
+.backup-file-item.selected {
+    border-color: var(--primary-color, #3b82f6);
+    background: #dbeafe;
+}
+
+.backup-file-info {
+    flex: 1;
+}
+
+.backup-file-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1f2937);
+    margin-bottom: 6px;
+    word-break: break-all;
+}
+
+.backup-file-meta {
+    font-size: 13px;
+    color: var(--text-secondary, #6b7280);
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.backup-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.badge-light {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.badge-full {
+    background: #fce7f3;
+    color: #9d174d;
+}
+
+.backup-file-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.btn-restore {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s ease;
+}
+
+.btn-restore-primary {
+    background: var(--primary-color, #3b82f6);
+    color: white;
+}
+
+.btn-restore-primary:hover {
+    background: var(--primary-hover, #2563eb);
+}
+
+.btn-restore-secondary {
+    background: var(--secondary-bg, #f3f4f6);
+    color: var(--text-primary, #1f2937);
+    border: 1px solid var(--border-color, #e5e7eb);
+}
+
+.btn-restore-secondary:hover {
+    background: var(--secondary-hover, #e5e7eb);
+}
+
+.btn-restore:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 恢复选项弹窗 */
+.restore-options {
+    margin-top: 20px;
+    padding: 20px;
+    background: var(--bg-secondary, #f9fafb);
+    border-radius: 10px;
+    border: 1px solid var(--border-color, #e5e7eb);
+    display: none;
+}
+
+.restore-options.show {
+    display: block;
+}
+
+.restore-options-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary, #1f2937);
+    margin-bottom: 16px;
+}
+
+.restore-option-item {
+    padding: 12px;
+    background: var(--card-bg, #ffffff);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    border: 2px solid var(--border-color, #e5e7eb);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.restore-option-item:hover {
+    border-color: var(--primary-color, #3b82f6);
+}
+
+.restore-option-item.selected {
+    border-color: var(--primary-color, #3b82f6);
+    background: #eff6ff;
+}
+
+.restore-option-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary, #1f2937);
+    margin-bottom: 4px;
+}
+
+.restore-option-desc {
+    font-size: 12px;
+    color: var(--text-secondary, #6b7280);
+    line-height: 1.5;
+}
+
+.restore-warning {
+    padding: 12px 16px;
+    background: #fef3c7;
+    color: #92400e;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-top: 16px;
+    border: 1px solid #fde68a;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.restore-warning-icon {
+    flex-shrink: 0;
+    font-size: 18px;
+}
+
+.restore-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+    justify-content: flex-end;
+}
+
+.btn-cancel {
+    background: var(--secondary-bg, #f3f4f6);
+    color: var(--text-primary, #1f2937);
+    border: 1px solid var(--border-color, #e5e7eb);
+}
+
+.btn-cancel:hover {
+    background: var(--secondary-hover, #e5e7eb);
+}
+
+.btn-confirm-restore {
+    background: #dc2626;
+    color: white;
+}
+
+.btn-confirm-restore:hover {
+    background: #b91c1c;
+}
+
+/* 状态消息 */
+.status-message {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-top: 16px;
+    font-size: 14px;
+    display: none;
+}
+
+.status-success {
+    background: #dcfce7;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    display: block;
+}
+
+.status-error {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+    display: block;
+}
+
+.status-info {
+    background: #dbeafe;
+    color: #1e40af;
+    border: 1px solid #bfdbfe;
+    display: block;
+}
+
+/* 空状态 */
+.empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-secondary, #6b7280);
+}
+
+.empty-state-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+}
+
+/* 刷新按钮 */
+.btn-refresh {
+    margin-left: auto;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 6px;
+    background: var(--secondary-bg, #f3f4f6);
+    color: var(--text-primary, #1f2937);
+    border: 1px solid var(--border-color, #e5e7eb);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.btn-refresh:hover {
+    background: var(--secondary-hover, #e5e7eb);
+}
+
+.loading-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 响应式 */
+@media (max-width: 640px) {
+    .restore-card {
+        padding: 16px;
+    }
+    
+    .backup-file-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+    
+    .backup-file-actions {
+        width: 100%;
+    }
+    
+    .backup-file-actions .btn-restore {
+        flex: 1;
+        justify-content: center;
+    }
+    
+    .restore-actions {
+        flex-direction: column;
+    }
+    
+    .restore-actions .btn-restore {
+        width: 100%;
+        justify-content: center;
+    }
+}
+</style>
+
+<div class="restore-container">
+    <!-- 云端备份列表卡片 -->
+    <div class="restore-card">
+        <div class="restore-card-title">
+            <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
+            </svg>
+            云端备份文件
+            <button class="btn-refresh" onclick="loadBackups()" id="btnRefresh">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                刷新
+            </button>
+        </div>
+        <div class="restore-card-desc">
+            从坚果云云端读取备份文件，选择需要恢复的备份包。恢复前会自动创建当前配置快照。
+        </div>
+
+        <!-- 类型标签页 -->
+        <div class="backup-tabs">
+            <button class="tab-btn active" onclick="switchTab('light')" id="tabLight">
+                <span class="backup-badge badge-light">轻量备份</span>
+            </button>
+            <button class="tab-btn" onclick="switchTab('full')" id="tabFull">
+                <span class="backup-badge badge-full">全量备份</span>
+            </button>
+        </div>
+
+        <!-- 轻量备份列表 -->
+        <div class="tab-content active" id="contentLight">
+            <div id="lightBackupsList" class="backup-files-list">
+                <div class="empty-state">
+                    <div class="empty-state-icon">☁️</div>
+                    <div>加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 全量备份列表 -->
+        <div class="tab-content" id="contentFull">
+            <div id="fullBackupsList" class="backup-files-list">
+                <div class="empty-state">
+                    <div class="empty-state-icon">☁️</div>
+                    <div>加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="listStatus" class="status-message"></div>
+    </div>
+
+    <!-- 恢复选项卡片 -->
+    <div class="restore-card restore-options" id="restoreOptions">
+        <div class="restore-options-title">
+            选择恢复模式 - <span id="selectedFileName"></span>
+        </div>
+
+        <!-- 轻量备份恢复选项 -->
+        <div id="lightOptions">
+            <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only">
+                <div class="restore-option-title">仅恢复系统配置</div>
+                <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+            </div>
+            <div class="restore-option-item" onclick="selectRestoreMode('system_plugins')" id="mode_system_plugins">
+                <div class="restore-option-title">完整恢复（系统+插件配置+重装插件）</div>
+                <div class="restore-option-desc">恢复系统配置和所有插件配置，并根据清单自动联网重装缺失的插件</div>
+            </div>
+        </div>
+
+        <!-- 全量备份恢复选项 -->
+        <div id="fullOptions" style="display: none;">
+            <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only_full">
+                <div class="restore-option-title">仅恢复系统配置</div>
+                <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+            </div>
+            <div class="restore-option-item" onclick="selectRestoreMode('full_offline')" id="mode_full_offline">
+                <div class="restore-option-title">离线完整恢复（系统+插件程序+配置）</div>
+                <div class="restore-option-desc">无需联网，离线恢复系统配置、插件程序本体和全部插件设置，整机完整还原</div>
+            </div>
+        </div>
+
+        <div class="restore-warning">
+            <span class="restore-warning-icon">⚠️</span>
+            <div>
+                <strong>重要提示：</strong>恢复操作会覆盖当前配置。执行前系统会自动创建当前配置快照，
+                如遇问题可从本地快照回滚。部分配置恢复后可能需要重启路由器生效。
+            </div>
+        </div>
+
+        <div class="restore-actions">
+            <button class="btn-restore btn-cancel" onclick="cancelRestore()">取消</button>
+            <button class="btn-restore btn-confirm-restore" id="btnConfirmRestore" onclick="confirmRestore()" disabled>
+                确认恢复
+            </button>
+        </div>
+
+        <div id="restoreStatus" class="status-message"></div>
+    </div>
+</div>
+
+<script type="text/javascript">
+var currentTab = 'light';
+var selectedFile = '';
+var selectedMode = '';
+
+// 切换标签页
+function switchTab(type) {
+    currentTab = type;
+    
+    // 更新标签按钮状态
+    document.getElementById('tabLight').classList.toggle('active', type === 'light');
+    document.getElementById('tabFull').classList.toggle('active', type === 'full');
+    
+    // 更新内容显示
+    document.getElementById('contentLight').classList.toggle('active', type === 'light');
+    document.getElementById('contentFull').classList.toggle('active', type === 'full');
+    
+    // 隐藏恢复选项
+    document.getElementById('restoreOptions').classList.remove('show');
+    selectedFile = '';
+    selectedMode = '';
+}
+
+// 加载备份列表
+function loadBackups() {
+    var btnRefresh = document.getElementById('btnRefresh');
+    var statusDiv = document.getElementById('listStatus');
+    
+    btnRefresh.disabled = true;
+    btnRefresh.innerHTML = '<span class="loading-spinner"></span> 加载中';
+    statusDiv.className = 'status-message';
+    statusDiv.style.display = 'none';
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '<%=luci.dispatcher.build_url("admin/system/jianguoyun-backup/list_backups")%>', true);
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            btnRefresh.disabled = false;
+            btnRefresh.innerHTML = '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> 刷新';
+            
+            if (xhr.status === 200) {
+                parseBackupList(xhr.responseText);
+            } else {
+                statusDiv.className = 'status-message status-error';
+                statusDiv.textContent = '加载失败，请检查网络连接和WebDAV配置';
+                statusDiv.style.display = 'block';
+            }
+        }
+    };
+    
+    xhr.send();
+}
+
+// 解析备份列表
+function parseBackupList(text) {
+    var lightList = [];
+    var fullList = [];
+    var currentSection = '';
+    
+    var lines = text.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line === '=== 轻量备份 ===') {
+            currentSection = 'light';
+            continue;
+        } else if (line === '=== 全量备份 ===') {
+            currentSection = 'full';
+            continue;
+        } else if (line === '' || line.indexOf('无法获取') !== -1) {
+            continue;
+        }
+        
+        if (currentSection === 'light' && line.indexOf('.tar.gz') !== -1) {
+            lightList.push(line);
+        } else if (currentSection === 'full' && line.indexOf('.tar.gz') !== -1) {
+            fullList.push(line);
+        }
+    }
+    
+    // 渲染列表
+    renderBackupList('lightBackupsList', lightList, 'light');
+    renderBackupList('fullBackupsList', fullList, 'full');
+}
+
+// 渲染备份列表
+function renderBackupList(containerId, files, type) {
+    var container = document.getElementById(containerId);
+    
+    if (files.length === 0) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div>暂无备份文件</div></div>';
+        return;
+    }
+    
+    // 按文件名排序（最新的在前）
+    files.sort().reverse();
+    
+    var html = '';
+    for (var i = 0; i < files.length; i++) {
+        var filename = files[i];
+        var badgeClass = type === 'light' ? 'badge-light' : 'badge-full';
+        var badgeText = type === 'light' ? '轻量' : '全量';
+        
+        // 尝试从文件名提取时间
+        var dateStr = '未知时间';
+        var match = filename.match(/(\d{8}_\d{6})/);
+        if (match) {
+            var timeStr = match[1];
+            var year = timeStr.substring(0, 4);
+            var month = timeStr.substring(4, 6);
+            var day = timeStr.substring(6, 8);
+            var hour = timeStr.substring(9, 11);
+            var minute = timeStr.substring(11, 13);
+            var second = timeStr.substring(13, 15);
+            dateStr = year + '-' + month + '-' + day + ' ' + hour + ':' + minute + ':' + second;
+        }
+        
+        html += '<div class="backup-file-item" onclick="selectFile(\'' + escapeHtml(filename) + '\', \'' + type + '\')" id="file_' + type + '_' + i + '">';
+        html += '  <div class="backup-file-info">';
+        html += '    <div class="backup-file-name">' + escapeHtml(filename) + '</div>';
+        html += '    <div class="backup-file-meta">';
+        html += '      <span class="backup-badge ' + badgeClass + '">' + badgeText + '备份</span>';
+        html += '      <span>📅 ' + dateStr + '</span>';
+        html += '    </div>';
+        html += '  </div>';
+        html += '  <div class="backup-file-actions">';
+        html += '    <button class="btn-restore btn-restore-secondary" onclick="event.stopPropagation(); downloadBackup(\'' + escapeHtml(filename) + '\', \'' + type + '\')">下载</button>';
+        html += '    <button class="btn-restore btn-restore-primary" onclick="event.stopPropagation(); selectFile(\'' + escapeHtml(filename) + '\', \'' + type + '\')">恢复</button>';
+        html += '  </div>';
+        html += '</div>';
+    }
+    
+    container.innerHTML = html;
+}
+
+// 选择备份文件
+function selectFile(filename, type) {
+    selectedFile = filename;
+    currentTab = type;
+    selectedMode = '';
+    
+    // 显示恢复选项
+    document.getElementById('restoreOptions').classList.add('show');
+    document.getElementById('selectedFileName').textContent = filename;
+    
+    // 显示对应类型的恢复选项
+    document.getElementById('lightOptions').style.display = type === 'light' ? 'block' : 'none';
+    document.getElementById('fullOptions').style.display = type === 'full' ? 'block' : 'none';
+    
+    // 重置模式选择
+    document.querySelectorAll('.restore-option-item').forEach(function(el) {
+        el.classList.remove('selected');
+    });
+    document.getElementById('btnConfirmRestore').disabled = true;
+    
+    // 滚动到恢复选项
+    document.getElementById('restoreOptions').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// 选择恢复模式
+function selectRestoreMode(mode) {
+    selectedMode = mode;
+    
+    // 更新选中状态
+    document.querySelectorAll('.restore-option-item').forEach(function(el) {
+        el.classList.remove('selected');
+    });
+    
+    if (currentTab === 'light') {
+        document.getElementById('mode_' + mode).classList.add('selected');
+    } else {
+        if (mode === 'system_only') {
+            document.getElementById('mode_system_only_full').classList.add('selected');
+        } else if (mode === 'full_offline') {
+            document.getElementById('mode_full_offline').classList.add('selected');
+        }
+    }
+    
+    // 启用确认按钮
+    document.getElementById('btnConfirmRestore').disabled = false;
+}
+
+// 取消恢复
+function cancelRestore() {
+    document.getElementById('restoreOptions').classList.remove('show');
+    selectedFile = '';
+    selectedMode = '';
+}
+
+// 确认恢复
+function confirmRestore() {
+    if (!selectedFile || !selectedMode) {
+        return;
+    }
+    
+    var btn = document.getElementById('btnConfirmRestore');
+    var statusDiv = document.getElementById('restoreStatus');
+    
+    if (!confirm('确定要恢复备份吗？\n\n文件：' + selectedFile + '\n模式：' + getModeText(selectedMode) + '\n\n恢复前会自动创建当前配置快照。')) {
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = '恢复中...';
+    statusDiv.className = 'status-message';
+    statusDiv.style.display = 'none';
+    
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '<%=luci.dispatcher.build_url("admin/system/jianguoyun-backup/do_restore")%>', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4) {
+            btn.disabled = false;
+            btn.textContent = '确认恢复';
+            
+            if (xhr.status === 200) {
+                statusDiv.className = 'status-message status-info';
+                statusDiv.textContent = xhr.responseText;
+                statusDiv.style.display = 'block';
+            } else {
+                statusDiv.className = 'status-message status-error';
+                statusDiv.textContent = '恢复请求失败，请重试';
+                statusDiv.style.display = 'block';
+            }
+        }
+    };
+    
+    xhr.send('type=' + encodeURIComponent(currentTab) + '&filename=' + encodeURIComponent(selectedFile) + '&mode=' + encodeURIComponent(selectedMode));
+}
+
+// 获取模式文本
+function getModeText(mode) {
+    var modes = {
+        'system_only': '仅恢复系统配置',
+        'system_plugins': '完整恢复（系统+插件配置+重装插件）',
+        'full_offline': '离线完整恢复（系统+插件程序+配置）'
+    };
+    return modes[mode] || mode;
+}
+
+// 下载备份
+function downloadBackup(filename, type) {
+    alert('下载功能：' + filename + '\n\n类型：' + (type === 'light' ? '轻量备份' : '全量备份') + '\n\n文件将下载到路由器本地存储：/etc/jianguoyun-backup/local/');
+}
+
+// HTML转义
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 页面加载完成后加载备份列表
+document.addEventListener('DOMContentLoaded', function() {
+    loadBackups();
+});
+</script>
+
+<%+footer%>
