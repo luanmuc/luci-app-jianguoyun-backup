@@ -1,4 +1,3 @@
-
 # 坚果云备份插件 - UCI配置文件
 # 安装后自动生成，可通过LuCI界面修改
 
@@ -7,6 +6,7 @@ config global 'global'
 	option username ''
 	option password ''
 	option remote_root 'OpenWrt_Backup'
+	option max_remote_backups '10'
 
 config light_backup 'light_backup'
 	option enabled '0'
