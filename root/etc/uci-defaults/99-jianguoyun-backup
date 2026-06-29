@@ -21,12 +21,14 @@ if [ ! -f /etc/config/jianguoyun-backup ]; then
     uci set jianguoyun-backup.light_backup.schedule='daily'
     uci set jianguoyun-backup.light_backup.time='03:00'
     uci set jianguoyun-backup.light_backup.day='0'
+    uci set jianguoyun-backup.light_backup.day_month='1'
     
     uci set jianguoyun-backup.full_backup=full_backup
     uci set jianguoyun-backup.full_backup.enabled='0'
     uci set jianguoyun-backup.full_backup.schedule='weekly'
     uci set jianguoyun-backup.full_backup.time='04:00'
     uci set jianguoyun-backup.full_backup.day='0'
+    uci set jianguoyun-backup.full_backup.day_month='1'
     
     uci commit jianguoyun-backup
 fi
