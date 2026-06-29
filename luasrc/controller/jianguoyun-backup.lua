@@ -235,8 +235,16 @@ function action_list_local()
     local jsonc = require "luci.jsonc"
     local uci = require "luci.model.uci".cursor()
     
-    -- 从UCI配置读取本地备份目录
-    local backup_dir = uci:get("jianguoyun-backup", "global", "local_backup_dir") or "/etc/jianguoyun-backup/local"
+    -- 从UCI配置读取本地备份存储位置
+    local backup_storage = uci:get("jianguoyun-backup", "global", "backup_storage") or "tmp"
+    local backup_dir
+    
+    if backup_storage == "permanent" then
+        backup_dir = "/etc/jianguoyun-backup/local"
+    else
+        backup_dir = "/tmp/jianguoyun-backup/local"
+    end
+    
     local files = {}
     
     -- 检查目录是否存在
