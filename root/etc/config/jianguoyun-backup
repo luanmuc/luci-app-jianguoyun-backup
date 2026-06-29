@@ -7,6 +7,7 @@ config global 'global'
 	option password ''
 	option remote_root 'OpenWrt_Backup'
 	option max_remote_backups '10'
+	option backup_storage 'tmp'
 
 config light_backup 'light_backup'
 	option enabled '0'
