@@ -351,6 +351,76 @@ verify_checksum() {
     fi
 }
 
+# ==================== 磁盘空间检查 ====================
+
+# 检查磁盘空间是否足够
+check_disk_space() {
+    local target_dir="$1"
+    local estimated_size="$2"  # 预估需要的空间（字节）
+    
+    if [ ! -d "$target_dir" ]; then
+        mkdir -p "$target_dir" 2>/dev/null || {
+            log_error "无法创建目录: $target_dir"
+            return 1
+        }
+    fi
+    
+    # 获取目标目录所在文件系统的剩余空间
+    local available_space=$(df -k "$target_dir" 2>/dev/null | tail -n1 | awk '{print $4}')
+    
+    if [ -z "$available_space" ] || [ "$available_space" -eq 0 ]; then
+        log_error "无法获取磁盘剩余空间信息"
+        return 1
+    fi
+    
+    # 转换为字节（df -k 返回的是 KB）
+    local available_bytes=$((available_space * 1024))
+    
+    # 添加 20% 的安全余量
+    local required_bytes=$((estimated_size * 120 / 100))
+    
+    log_info "磁盘剩余空间: $((available_space / 1024)) MB，预估需要: $((required_bytes / 1024 / 1024)) MB"
+    
+    if [ "$available_bytes" -lt "$required_bytes" ]; then
+        log_error "磁盘空间不足！剩余: $((available_space / 1024)) MB，需要: $((required_bytes / 1024 / 1024)) MB"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 预估备份大小
+estimate_backup_size() {
+    local type="$1"
+    local estimated_size=0
+    
+    # 统计 /etc 目录大小
+    if [ -d /etc ]; then
+        local etc_size=$(du -sk /etc 2>/dev/null | awk '{print $1}')
+        estimated_size=$((estimated_size + etc_size * 1024))
+    fi
+    
+    # 统计插件配置目录大小
+    local plugin_dirs="/etc/AdGuardHome /etc/openclash /etc/passwall /etc/shadowvpn /etc/v2ray /etc/trojan /etc/xray /etc/ssrplus /etc/aria2 /etc/transmission /etc/samba /etc/vsftpd /etc/nginx /etc/uhttpd"
+    for dir in $plugin_dirs; do
+        if [ -d "$dir" ]; then
+            local dir_size=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+            estimated_size=$((estimated_size + dir_size * 1024))
+        fi
+    done
+    
+    # 如果是全量备份，加上插件包的预估大小
+    if [ "$type" = "full" ]; then
+        # 预估每个插件包约 50KB，按 200 个插件计算
+        estimated_size=$((estimated_size + 200 * 50 * 1024))
+    fi
+    
+    # 压缩后大约是原始大小的 50%
+    estimated_size=$((estimated_size / 2))
+    
+    echo "$estimated_size"
+}
+
 # ==================== 锁文件与清理机制 ====================
 
 # 获取锁（防止并发执行）- 使用mkdir原子操作
@@ -445,6 +515,7 @@ read_config() {
     REMOTE_ROOT=$(uci -q get jianguoyun-backup.global.remote_root)
     MAX_REMOTE=$(uci -q get jianguoyun-backup.global.max_remote_backups)
     BACKUP_STORAGE=$(uci -q get jianguoyun-backup.global.backup_storage)
+    KEEP_LOCAL=$(uci -q get jianguoyun-backup.global.keep_local_backup)
     
     # 解密密码
     WEBDAV_PASS=$(decrypt_password "$WEBDAV_PASS_ENC")
@@ -481,6 +552,7 @@ read_config() {
     [ -z "$REMOTE_ROOT" ] && REMOTE_ROOT="OpenWrt_Backup"
     [ -z "$MAX_REMOTE" ] && MAX_REMOTE="$MAX_REMOTE_BACKUPS"
     [ -z "$BACKUP_STORAGE" ] && BACKUP_STORAGE="tmp"
+    [ -z "$KEEP_LOCAL" ] && KEEP_LOCAL="0"
     [ -z "$LIGHT_SCHEDULE" ] && LIGHT_SCHEDULE="daily"
     [ -z "$LIGHT_TIME" ] && LIGHT_TIME="03:00"
     [ -z "$LIGHT_DAY" ] && LIGHT_DAY="0"
@@ -936,6 +1008,17 @@ do_light_backup() {
     get_device_info
     prepare_temp_dir
     
+    # 磁盘空间检查
+    update_status "running" "15" "检查磁盘空间..."
+    local estimated_size=$(estimate_backup_size "light")
+    if ! check_disk_space "$LOCAL_BACKUP_DIR" "$estimated_size"; then
+        log_error "磁盘空间不足，无法进行备份"
+        update_status "failed" "100" "磁盘空间不足"
+        log_audit "light_backup" "failed" "磁盘空间不足"
+        cleanup_temp
+        return 1
+    fi
+    
     update_status "running" "20" "备份系统配置..."
     
     # 备份内容
@@ -976,6 +1059,13 @@ do_light_backup() {
             # 上传校验和文件
             webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null
             log_success "轻量备份上传成功"
+            
+            # 根据配置决定是否保留本地备份
+            if [ "$KEEP_LOCAL" = "0" ]; then
+                log_info "上传成功，删除本地备份文件"
+                rm -f "$local_file"
+                rm -f "${local_file}.md5"
+            fi
             
             # 清理云端旧备份
             update_status "running" "90" "清理旧备份..."
@@ -1039,6 +1129,17 @@ do_full_backup() {
     get_device_info
     prepare_temp_dir
     
+    # 磁盘空间检查
+    update_status "running" "10" "检查磁盘空间..."
+    local estimated_size=$(estimate_backup_size "full")
+    if ! check_disk_space "$LOCAL_BACKUP_DIR" "$estimated_size"; then
+        log_error "磁盘空间不足，无法进行备份"
+        update_status "failed" "100" "磁盘空间不足"
+        log_audit "full_backup" "failed" "磁盘空间不足"
+        cleanup_temp
+        return 1
+    fi
+    
     update_status "running" "15" "备份系统配置..."
     
     # 备份内容
@@ -1082,6 +1183,13 @@ do_full_backup() {
             # 上传校验和文件
             webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null
             log_success "全量备份上传成功"
+            
+            # 根据配置决定是否保留本地备份
+            if [ "$KEEP_LOCAL" = "0" ]; then
+                log_info "上传成功，删除本地备份文件"
+                rm -f "$local_file"
+                rm -f "${local_file}.md5"
+            fi
             
             # 清理云端旧备份
             update_status "running" "95" "清理旧备份..."
