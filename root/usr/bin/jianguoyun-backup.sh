@@ -1,5 +1,8 @@
 #!/bin/sh
 # 坚果云备份插件 - 核心脚本（增强版）
+# 严格模式：遇到错误立即退出，未定义变量报错，管道失败返回非零
+set -euo pipefail
+
 # 仅使用系统自带工具：curl, tar, uci, md5sum, base64
 # 兼容 OpenWrt 24.10/25.12
 
@@ -23,6 +26,45 @@ MAX_LOG_LINES=1000
 MAX_LOG_SIZE=1048576  # 1MB
 MAX_AUDIT_LINES=500
 
+# ==================== 统计变量 ====================
+BACKUP_START_TIME=""
+BACKUP_END_TIME=""
+BACKUP_FILE_COUNT=0
+BACKUP_TOTAL_SIZE=0
+
+# ==================== curl 错误处理 ====================
+# curl 返回码说明
+CURL_ERRORS="
+0: 正常完成
+1: 不支持的协议
+2: 初始化失败
+3: URL格式错误
+6: 无法解析主机
+7: 无法连接到主机
+28: 操作超时
+35: SSL连接错误
+56: 接收数据失败
+60: SSL证书验证失败
+"
+
+# 解析 curl 返回码
+curl_error_msg() {
+    local code="$1"
+    case "$code" in
+        0) echo "正常完成" ;;
+        1) echo "不支持的协议" ;;
+        2) echo "初始化失败" ;;
+        3) echo "URL格式错误" ;;
+        6) echo "无法解析主机（DNS失败）" ;;
+        7) echo "无法连接到主机" ;;
+        28) echo "操作超时" ;;
+        35) echo "SSL连接错误" ;;
+        56) echo "接收数据失败" ;;
+        60) echo "SSL证书验证失败" ;;
+        *) echo "未知错误 (代码: $code)" ;;
+    esac
+}
+
 # 包管理器（自动检测）
 PKG_MANAGER=""
 MAX_LOCAL_BACKUPS=5
@@ -35,6 +77,58 @@ CURL_SSL_OPT="-k"
 ENCRYPT_KEY="jianguoyun_backup_2024"
 
 # ==================== 工具函数 ====================
+
+# ==================== 安全验证函数 ====================
+
+# ==================== 安全验证函数 ====================
+
+# 验证文件名安全性（防止路径遍历）
+validate_filename() {
+    local filename="$1"
+    
+    # 空文件名
+    if [ -z "$filename" ]; then
+        log_error "文件名不能为空"
+        return 1
+    fi
+    
+    # 正则验证：只允许字母、数字、下划线、点、横杠
+    # 自动排除路径遍历（..、/）、命令注入（$、`、;、|、&、*）等
+    if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+        log_error "文件名包含非法字符: $filename"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 验证备份类型
+validate_backup_type() {
+    local type="$1"
+    case "$type" in
+        light|full)
+            return 0
+            ;;
+        *)
+            log_error "无效的备份类型: $type"
+            return 1
+            ;;
+    esac
+}
+
+# 验证恢复模式
+validate_restore_mode() {
+    local mode="$1"
+    case "$mode" in
+        system_only|system_plugins|full_offline)
+            return 0
+            ;;
+        *)
+            log_error "无效的恢复模式: $mode"
+            return 1
+            ;;
+    esac
+}
 
 # 简单的 base64 编码加密（混淆用）
 encrypt_password() {
@@ -470,24 +564,55 @@ webdav_upload() {
         return 1
     fi
     
+    local file_size=$(du -h "$local_file" | awk '{print $1}')
+    log_info "文件大小: $file_size"
+    
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --upload-file "$local_file"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 10))             "$url" 2>/dev/null)
+        local tmp_output="/tmp/curl_upload_$$"
+        local http_code
+        local curl_exit=0
+        
+        # 执行 curl 并捕获退出码
+        http_code=$(curl -s $CURL_SSL_OPT -o "$tmp_output" -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --upload-file "$local_file"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 10))             "$url" 2>/dev/null) || curl_exit=$?
+        
+        rm -f "$tmp_output"
+        
+        if [ "$curl_exit" -ne 0 ]; then
+            local err_msg=$(curl_error_msg $curl_exit)
+            log_error "上传失败: 网络错误 - $err_msg (重试 $((retry+1))/$CURL_RETRY)"
+            retry=$((retry + 1))
+            sleep 3
+            continue
+        fi
         
         case "$http_code" in
             200|201|204)
-                log_success "文件上传成功: $remote_path"
+                log_success "文件上传成功: $remote_path ($file_size)"
                 return 0
                 ;;
             401)
-                log_error "认证失败，请检查账号密码"
+                log_error "认证失败（HTTP 401），请检查账号密码"
+                return 1
+                ;;
+            403)
+                log_error "权限不足（HTTP 403），请检查账号权限"
                 return 1
                 ;;
             404)
-                log_error "远端目录不存在，尝试创建"
+                log_info "远端目录不存在，尝试创建..."
                 local dir_path=$(dirname "$remote_path")
                 webdav_mkdir "$dir_path" || return 1
                 retry=$((retry + 1))
+                ;;
+            413)
+                log_error "文件过大（HTTP 413），超出服务器限制"
+                return 1
+                ;;
+            500|502|503|504)
+                log_error "服务器错误（HTTP $http_code），请稍后重试 (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep 5
                 ;;
             *)
                 log_error "上传失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
@@ -497,7 +622,7 @@ webdav_upload() {
         esac
     done
     
-    log_error "文件上传失败，已达最大重试次数"
+    log_error "文件上传失败，已达最大重试次数 ($CURL_RETRY 次)"
     return 1
 }
 
@@ -806,6 +931,11 @@ do_light_backup() {
     log_audit "light_backup" "running" "开始轻量备份"
     update_status "running" "10" "准备备份..."
     
+    # 记录开始时间
+    BACKUP_START_TIME=$(date +%s)
+    BACKUP_FILE_COUNT=0
+    BACKUP_TOTAL_SIZE=0
+    
     read_config
     get_device_info
     prepare_temp_dir
@@ -857,9 +987,28 @@ do_light_backup() {
             cleanup_local_backups "light"
             
             cleanup_temp
-            update_status "success" "100" "轻量备份完成"
+            
+            # 计算耗时
+            BACKUP_END_TIME=$(date +%s)
+            local duration=$((BACKUP_END_TIME - BACKUP_START_TIME))
+            local duration_str=""
+            if [ $duration -ge 60 ]; then
+                duration_str="$((duration / 60))分$((duration % 60))秒"
+            else
+                duration_str="${duration}秒"
+            fi
+            
+            # 统计信息
             log_info "========== 轻量备份完成 =========="
-            log_audit "light_backup" "success" "备份完成，大小: $size"
+            log_success "备份统计："
+            log_success "  • 备份文件: $filename"
+            log_success "  • 备份大小: $size"
+            log_success "  • 备份类型: 轻量备份"
+            log_success "  • 耗时: $duration_str"
+            log_success "  • 云端保留: $MAX_REMOTE 个"
+            
+            update_status "success" "100" "轻量备份完成（耗时 $duration_str）"
+            log_audit "light_backup" "success" "备份完成，大小: $size，耗时: $duration_str"
             return 0
         else
             log_error "轻量备份上传失败，本地文件已保留: $local_file"
@@ -882,6 +1031,11 @@ do_full_backup() {
     log_info "========== 开始全量备份 =========="
     log_audit "full_backup" "running" "开始全量备份"
     update_status "running" "5" "准备备份..."
+    
+    # 记录开始时间
+    BACKUP_START_TIME=$(date +%s)
+    BACKUP_FILE_COUNT=0
+    BACKUP_TOTAL_SIZE=0
     
     read_config
     get_device_info
@@ -937,9 +1091,28 @@ do_full_backup() {
             cleanup_local_backups "full"
             
             cleanup_temp
-            update_status "success" "100" "全量备份完成"
+            
+            # 计算耗时
+            BACKUP_END_TIME=$(date +%s)
+            local duration=$((BACKUP_END_TIME - BACKUP_START_TIME))
+            local duration_str=""
+            if [ $duration -ge 60 ]; then
+                duration_str="$((duration / 60))分$((duration % 60))秒"
+            else
+                duration_str="${duration}秒"
+            fi
+            
+            # 统计信息
             log_info "========== 全量备份完成 =========="
-            log_audit "full_backup" "success" "备份完成，大小: $size"
+            log_success "备份统计："
+            log_success "  • 备份文件: $filename"
+            log_success "  • 备份大小: $size"
+            log_success "  • 备份类型: 全量备份"
+            log_success "  • 耗时: $duration_str"
+            log_success "  • 云端保留: $MAX_REMOTE 个"
+            
+            update_status "success" "100" "全量备份完成（耗时 $duration_str）"
+            log_audit "full_backup" "success" "备份完成，大小: $size，耗时: $duration_str"
             return 0
         else
             log_error "全量备份上传失败，本地文件已保留: $local_file"
