@@ -811,8 +811,7 @@ test_connection() {
 # 生成插件清单
 generate_plugin_list() {
     log_info "生成已安装插件清单"
-    list_installed_packages > "$BACKUP_DIR/plugin_data/plugin_list.txt" 2>/dev/null
-    if [ $? -eq 0 ]; then
+    if list_installed_packages > "$BACKUP_DIR/plugin_data/plugin_list.txt" 2>/dev/null; then
         log_info "插件清单生成成功，共 $(wc -l < "$BACKUP_DIR/plugin_data/plugin_list.txt") 个插件"
     else
         log_error "插件清单生成失败"
@@ -828,9 +827,7 @@ backup_system_config() {
     mkdir -p "$BACKUP_DIR/system_config"
     
     # 使用tar打包/etc，排除临时文件和运行时文件
-    tar czf "$BACKUP_DIR/system_config/etc_backup.tar.gz"         --exclude='/etc/rc.d/S*'         --exclude='/etc/modules-boot.d/*'         --exclude='/etc/modules.d/*'         --exclude='/etc/init.d/*'         --exclude='/etc/hotplug.d/*'         --exclude='/etc/config/luci*'         /etc 2>/dev/null
-    
-    if [ $? -eq 0 ]; then
+    if tar czf "$BACKUP_DIR/system_config/etc_backup.tar.gz"         --exclude='/etc/rc.d/S*'         --exclude='/etc/modules-boot.d/*'         --exclude='/etc/modules.d/*'         --exclude='/etc/init.d/*'         --exclude='/etc/hotplug.d/*'         --exclude='/etc/config/luci*'         /etc 2>/dev/null; then
         log_info "系统配置备份成功"
         return 0
     else
@@ -891,8 +888,7 @@ backup_plugin_binaries() {
             esac
             
             # 下载包文件
-            download_package "$pkg" "$BACKUP_DIR/plugin_bin/packages" 2>/dev/null
-            if [ $? -eq 0 ]; then
+            if download_package "$pkg" "$BACKUP_DIR/plugin_bin/packages" 2>/dev/null; then
                 count=$((count + 1))
             fi
         done
@@ -958,10 +954,12 @@ do_light_backup() {
     
     log_info "生成轻量备份包: $filename"
     
-    cd "$BACKUP_DIR"
-    tar czf "$local_file" system_config plugin_data 2>/dev/null
+    cd "$BACKUP_DIR" || {
+        log_error "无法进入备份目录: $BACKUP_DIR"
+        return 1
+    }
     
-    if [ $? -eq 0 ] && [ -s "$local_file" ]; then
+    if tar czf "$local_file" system_config plugin_data 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
         log_success "轻量备份包生成成功，大小: $size"
         
@@ -1062,10 +1060,12 @@ do_full_backup() {
     
     log_info "生成全量备份包: $filename"
     
-    cd "$BACKUP_DIR"
-    tar czf "$local_file" system_config plugin_data plugin_bin 2>/dev/null
+    cd "$BACKUP_DIR" || {
+        log_error "无法进入备份目录: $BACKUP_DIR"
+        return 1
+    }
     
-    if [ $? -eq 0 ] && [ -s "$local_file" ]; then
+    if tar czf "$local_file" system_config plugin_data plugin_bin 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
         log_success "全量备份包生成成功，大小: $size"
         
@@ -1159,16 +1159,19 @@ create_snapshot() {
     local snapshot_file="$LOCAL_BACKUP_DIR/snapshot_${TIMESTAMP}.tar.gz"
     
     mkdir -p "$SNAPSHOT_DIR"
-    cp -a /etc/config "$SNAPSHOT_DIR/" 2>/dev/null
     
-    cd "$SNAPSHOT_DIR"
-    tar czf "$snapshot_file" config 2>/dev/null
+    # 备份整个 /etc 目录（排除运行时生成的文件）
+    log_info "备份整个 /etc 目录到快照..."
+    cd /
+    tar czf "$snapshot_file"         --exclude='/etc/rc.d/S*'         --exclude='/etc/modules-boot.d/*'         --exclude='/etc/modules.d/*'         --exclude='/etc/init.d/*'         --exclude='/etc/hotplug.d/*'         --exclude='/etc/config/luci*'         --exclude='/etc/jianguoyun-backup/local/*'         etc 2>/dev/null
     cd /
     
     rm -rf "$SNAPSHOT_DIR"
     
     if [ -s "$snapshot_file" ]; then
-        log_success "配置快照已保存: $snapshot_file"
+        local size=$(du -h "$snapshot_file" | awk '{print $1}')
+        log_success "配置快照已保存: $snapshot_file (大小: $size)"
+        log_info "提示：如需回滚，可手动解压此文件到 / 目录"
         return 0
     else
         log_error "配置快照创建失败"
@@ -1239,14 +1242,13 @@ restore_system_config() {
     log_info "恢复系统配置"
     
     if [ -f "$backup_dir/system_config/etc_backup.tar.gz" ]; then
-        # 先创建快照
-        create_snapshot
+        # 恢复配置（快照已在 do_restore 开头创建）
+        cd / || {
+            log_error "无法进入根目录"
+            return 1
+        }
         
-        # 恢复配置
-        cd /
-        tar xzf "$backup_dir/system_config/etc_backup.tar.gz" 2>/dev/null
-        
-        if [ $? -eq 0 ]; then
+        if tar xzf "$backup_dir/system_config/etc_backup.tar.gz" 2>/dev/null; then
             log_success "系统配置恢复成功"
             # 提交UCI变更
             uci commit 2>/dev/null
@@ -1411,9 +1413,13 @@ do_restore() {
     log_info "========== 开始恢复 =========="
     log_info "备份类型: $type, 文件: $filename, 模式: $mode"
     log_audit "restore" "running" "开始恢复 $type/$filename ($mode)"
-    update_status "running" "10" "准备恢复..."
+    update_status "running" "5" "准备恢复..."
     
     read_config
+    
+    # 恢复前创建快照（无论什么模式都创建）
+    update_status "running" "10" "创建配置快照..."
+    create_snapshot || log_warning "快照创建失败，继续恢复（无回滚）"
     
     # 下载备份文件
     local remote_path="${REMOTE_ROOT}/${type}/${filename}"
@@ -1455,9 +1461,7 @@ do_restore() {
     
     update_status "running" "40" "解压备份文件..."
     log_info "解压备份文件..."
-    tar xzf "$local_file" -C "$RESTORE_DIR" 2>/dev/null
-    
-    if [ $? -ne 0 ]; then
+    if ! tar xzf "$local_file" -C "$RESTORE_DIR" 2>/dev/null; then
         log_error "备份文件解压失败"
         rm -rf "$RESTORE_DIR"
         rm -f "$local_file" "$checksum_file"
