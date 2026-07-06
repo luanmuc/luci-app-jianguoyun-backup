@@ -20,7 +20,24 @@ stop_service() {
     /etc/init.d/cron restart 2>/dev/null
 }
 
+restart_service() {
+    stop_service
+    start_service
+}
+
+reload_service() {
+    # 重新加载配置（重新设置定时任务）
+    if [ -x "$PROG" ]; then
+        $PROG setup_cron >/dev/null 2>&1
+    fi
+}
+
 service_running() {
     # 检查定时任务是否存在
     grep -q 'jianguoyun-backup' /etc/crontabs/root 2>/dev/null
+}
+
+boot() {
+    # 开机时启动服务
+    start_service
 }
