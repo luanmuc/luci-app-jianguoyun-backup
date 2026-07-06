@@ -60,6 +60,12 @@ o.default = "tmp"
 o.rmempty = false
 o.description = translate("临时空间：备份文件存放在内存中，重启后自动清除，不占用闪存空间，推荐使用。永久空间：备份文件保存在闪存中，重启后保留，适合仅本地备份不上传云端的场景。")
 
+-- 是否保留本地备份
+o = s:option(Flag, "keep_local_backup", translate("上传成功后保留本地备份"))
+o.rmempty = false
+o.default = "0"
+o.description = translate("关闭（推荐）：备份文件上传到云端成功后自动删除本地文件，节省路由器存储空间。开启：上传成功后仍保留本地备份文件，可用于快速恢复。")
+
 -- 连接测试按钮
 o = s:option(Button, "_test", translate("测试WebDAV连接"))
 o.inputtitle = translate("开始测试")
