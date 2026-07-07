@@ -15,6 +15,7 @@ uci -q get jianguoyun-backup.global >/dev/null || {
     uci set jianguoyun-backup.global.password=''
     uci set jianguoyun-backup.global.remote_root='OpenWrt_Backup'
     uci set jianguoyun-backup.global.max_remote_backups='10'
+    uci set jianguoyun-backup.global.max_local_backups='5'
     uci set jianguoyun-backup.global.backup_storage='tmp'
     uci set jianguoyun-backup.global.keep_local_backup='0'
 }
