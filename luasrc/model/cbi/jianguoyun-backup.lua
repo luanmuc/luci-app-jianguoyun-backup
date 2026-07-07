@@ -52,6 +52,14 @@ o.default = "10"
 o.rmempty = false
 o.description = translate("每种备份类型（轻量/全量）分别保留的云端备份数量，超出后自动删除最旧的备份，避免占用过多云端空间。")
 
+-- 本地备份保留数量
+o = s:option(Value, "max_local_backups", translate("本地备份保留数量"))
+o.datatype = "range(1, 50)"
+o.placeholder = "5"
+o.default = "5"
+o.rmempty = false
+o.description = translate("每种备份类型（轻量/全量）分别保留的本地备份数量，超出后自动删除最旧的备份。仅在开启「上传成功后保留本地备份」时生效。")
+
 -- 本地备份存储位置
 o = s:option(ListValue, "backup_storage", translate("本地备份存储位置"))
 o:value("tmp", translate("临时空间 (/tmp，推荐)"))
