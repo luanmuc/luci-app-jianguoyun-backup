@@ -313,8 +313,9 @@ function action_import_config()
         f:write(filecontent)
         f:close()
         
-        -- 执行导入
-        local result = sys.exec("/usr/bin/jianguoyun-backup.sh import_config " .. tmpfile .. " 2>&1")
+        -- 执行导入（使用安全的参数传递方式）
+        local cmd = string.format("/usr/bin/jianguoyun-backup.sh import_config %q 2>&1", tmpfile)
+        local result = sys.exec(cmd)
         
         -- 清理临时文件
         os.remove(tmpfile)
