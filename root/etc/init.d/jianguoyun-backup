@@ -34,7 +34,7 @@ reload_service() {
 
 service_running() {
     # 检查定时任务是否存在
-    grep -q 'jianguoyun-backup' /etc/crontabs/root 2>/dev/null
+    crontab -l 2>/dev/null | grep -q 'jianguoyun-backup'
 }
 
 boot() {
