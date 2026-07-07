@@ -1751,27 +1751,27 @@ import_config() {
     log_info "导入配置文件: $config_file"
     
     # 简单解析JSON（使用grep和sed，不依赖jq）
-    # 使用 sed 捕获组，1 引用第一个捕获组
-    local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
-    local username=$(grep '"username"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
-    local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
-    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?([0-9]*)"?.*/1/')
-    local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
-    local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
+    # 使用 sed 捕获组，\1 引用第一个捕获组
+    local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local username=$(grep '"username"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"\?\([0-9]*\)"\?.*/\1/')
+    local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     
     # 轻量备份配置
-    local light_enabled=$(grep -A10 '"light_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"([^"]*)".*/1/')
-    local light_schedule=$(grep -A10 '"light_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"([^"]*)".*/1/')
-    local light_time=$(grep -A10 '"light_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"([^"]*)".*/1/')
-    local light_day=$(grep -A10 '"light_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"([^"]*)".*/1/')
-    local light_day_month=$(grep -A10 '"light_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"([^"]*)".*/1/')
+    local light_enabled=$(grep -A10 '"light_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_schedule=$(grep -A10 '"light_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_time=$(grep -A10 '"light_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_day=$(grep -A10 '"light_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_day_month=$(grep -A10 '"light_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
     
     # 全量备份配置
-    local full_enabled=$(grep -A10 '"full_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"([^"]*)".*/1/')
-    local full_schedule=$(grep -A10 '"full_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"([^"]*)".*/1/')
-    local full_time=$(grep -A10 '"full_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"([^"]*)".*/1/')
-    local full_day=$(grep -A10 '"full_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"([^"]*)".*/1/')
-    local full_day_month=$(grep -A10 '"full_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"([^"]*)".*/1/')
+    local full_enabled=$(grep -A10 '"full_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_schedule=$(grep -A10 '"full_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_time=$(grep -A10 '"full_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_day=$(grep -A10 '"full_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_day_month=$(grep -A10 '"full_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
     
     # 应用配置 - 只在值非空时设置
     [ -n "$webdav_url" ] && uci set jianguoyun-backup.global.webdav_url="$webdav_url"
