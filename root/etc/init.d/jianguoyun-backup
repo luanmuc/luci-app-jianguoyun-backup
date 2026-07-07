@@ -15,8 +15,8 @@ start_service() {
 }
 
 stop_service() {
-    # 服务停止时移除定时任务
-    sed -i '/jianguoyun-backup/d' /etc/crontabs/root 2>/dev/null
+    # 服务停止时移除定时任务（使用 crontab 命令，更规范）
+    crontab -l 2>/dev/null | grep -v 'jianguoyun-backup' | crontab - 2>/dev/null
     /etc/init.d/cron restart 2>/dev/null
 }
 
