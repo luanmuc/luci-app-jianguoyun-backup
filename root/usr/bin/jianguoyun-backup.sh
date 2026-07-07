@@ -516,7 +516,8 @@ trap cleanup_temp_files EXIT INT TERM HUP
 
 # ==================== 日志函数 ====================
 
-# 日志写入计数器，每写10条检查一次轮转LOG_WRITE_COUNT=0
+# 日志写入计数器，每写10条检查一次轮转
+LOG_WRITE_COUNT=0
 log() {
     local level="$1"
     local message="$2"
@@ -1773,27 +1774,35 @@ setup_cron() {
     
     log_info "设置定时任务"
     
-    # 移除旧的定时任务
-    sed -i '/jianguoyun-backup/d' /etc/crontabs/root 2>/dev/null
+    # 读取当前 crontab，移除旧的定时任务
+    local current_cron=$(crontab -l 2>/dev/null | grep -v 'jianguoyun-backup' || true)
+    local new_cron="$current_cron"
     
     # 轻量备份定时任务
     if [ "$LIGHT_ENABLED" = "1" ]; then
-                # 验证时间格式        if ! validate_time_format "$LIGHT_TIME"; then            log_warning "轻量备份时间格式错误: $LIGHT_TIME，使用默认值 03:00"            LIGHT_TIME="03:00"        fi
+        # 验证时间格式
+        if ! validate_time_format "$LIGHT_TIME"; then
+            log_warning "轻量备份时间格式错误: $LIGHT_TIME，使用默认值 03:00"
+            LIGHT_TIME="03:00"
+        fi
         local hour minute
         hour=$(echo "$LIGHT_TIME" | cut -d: -f1)
         minute=$(echo "$LIGHT_TIME" | cut -d: -f2)
         
         case "$LIGHT_SCHEDULE" in
             daily)
-                echo "$minute $hour * * * /usr/bin/jianguoyun-backup.sh light_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour * * * /usr/bin/jianguoyun-backup.sh light_backup"
                 log_info "轻量备份：每日 $LIGHT_TIME 执行"
                 ;;
             weekly)
-                echo "$minute $hour * * $LIGHT_DAY /usr/bin/jianguoyun-backup.sh light_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour * * $LIGHT_DAY /usr/bin/jianguoyun-backup.sh light_backup"
                 log_info "轻量备份：每周第 $LIGHT_DAY 天 $LIGHT_TIME 执行"
                 ;;
             monthly)
-                echo "$minute $hour $LIGHT_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh light_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour $LIGHT_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh light_backup"
                 log_info "轻量备份：每月第 $LIGHT_DAY_MONTH 日 $LIGHT_TIME 执行"
                 ;;
         esac
@@ -1801,26 +1810,36 @@ setup_cron() {
     
     # 全量备份定时任务
     if [ "$FULL_ENABLED" = "1" ]; then
-                # 验证时间格式        if ! validate_time_format "$FULL_TIME"; then            log_warning "全量备份时间格式错误: $FULL_TIME，使用默认值 04:00"            FULL_TIME="04:00"        fi
+        # 验证时间格式
+        if ! validate_time_format "$FULL_TIME"; then
+            log_warning "全量备份时间格式错误: $FULL_TIME，使用默认值 04:00"
+            FULL_TIME="04:00"
+        fi
         local hour minute
         hour=$(echo "$FULL_TIME" | cut -d: -f1)
         minute=$(echo "$FULL_TIME" | cut -d: -f2)
         
         case "$FULL_SCHEDULE" in
             daily)
-                echo "$minute $hour * * * /usr/bin/jianguoyun-backup.sh full_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour * * * /usr/bin/jianguoyun-backup.sh full_backup"
                 log_info "全量备份：每日 $FULL_TIME 执行"
                 ;;
             weekly)
-                echo "$minute $hour * * $FULL_DAY /usr/bin/jianguoyun-backup.sh full_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour * * $FULL_DAY /usr/bin/jianguoyun-backup.sh full_backup"
                 log_info "全量备份：每周第 $FULL_DAY 天 $FULL_TIME 执行"
                 ;;
             monthly)
-                echo "$minute $hour $FULL_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh full_backup" >> /etc/crontabs/root
+                new_cron="$new_cron
+$minute $hour $FULL_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh full_backup"
                 log_info "全量备份：每月第 $FULL_DAY_MONTH 日 $FULL_TIME 执行"
                 ;;
         esac
     fi
+    
+    # 去除空行，写回 crontab
+    echo "$new_cron" | grep -v '^$' | crontab - 2>/dev/null
     
     # 重启cron服务
     /etc/init.d/cron restart 2>/dev/null
