@@ -316,6 +316,14 @@ function action_import_config()
         return
     end
     
+    -- 检查文件大小（最大 100KB）
+    local max_size = 100 * 1024  -- 100KB
+    if #filecontent > max_size then
+        http.prepare_content("text/plain; charset=utf-8")
+        http.write("错误：配置文件过大，最大允许 " .. (max_size / 1024) .. "KB")
+        return
+    end
+    
     -- 简单验证JSON格式
     if not filecontent:match("^%s*{") then
         http.prepare_content("text/plain; charset=utf-8")
