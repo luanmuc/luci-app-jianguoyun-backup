@@ -32,21 +32,6 @@ BACKUP_END_TIME=""
 BACKUP_FILE_COUNT=0
 BACKUP_TOTAL_SIZE=0
 
-# ==================== curl 错误处理 ====================
-# curl 返回码说明
-CURL_ERRORS="
-0: 正常完成
-1: 不支持的协议
-2: 初始化失败
-3: URL格式错误
-6: 无法解析主机
-7: 无法连接到主机
-28: 操作超时
-35: SSL连接错误
-56: 接收数据失败
-60: SSL证书验证失败
-"
-
 # 解析 curl 返回码
 curl_error_msg() {
     local code="$1"
@@ -73,12 +58,7 @@ CURL_RETRY=2
 CURL_TIMEOUT=30
 CURL_SSL_OPT="-k"
 
-# 加密密钥（简单混淆，非真正加密）
-ENCRYPT_KEY="jianguoyun_backup_2024"
-
 # ==================== 工具函数 ====================
-
-# ==================== 安全验证函数 ====================
 
 # ==================== 安全验证函数 ====================
 
@@ -505,6 +485,10 @@ log_success() {
     log "SUCCESS" "$1"
 }
 
+log_warning() {
+    log "WARNING" "$1"
+}
+
 # ==================== 配置读取 ====================
 
 # 读取UCI配置
@@ -578,7 +562,7 @@ get_device_info() {
 prepare_temp_dir() {
     rm -rf "$BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"/{system_config,plugin_data,plugin_bin}
-    mkdir -p "$LOCAL_BACKUP_DIR"
+    # LOCAL_BACKUP_DIR 将在 read_config 后由 prepare_temp_dir 创建
     # 确保永久存储目录存在（日志文件需要）
     mkdir -p "$PERMANENT_BACKUP_DIR"
     mkdir -p "$(dirname "$LOG_FILE")"
@@ -749,20 +733,53 @@ webdav_list() {
     
     local retry=0
     while [ $retry -le $CURL_RETRY ]; do
-        local result=$(curl -s $CURL_SSL_OPT             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --request PROPFIND             --header "Depth: 1"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 2))             -w "\n%{http_code}"             "$url" 2>/dev/null)
+        local result=$(curl -s $CURL_SSL_OPT 
+            --user "${WEBDAV_USER}:${WEBDAV_PASS}" 
+            --request PROPFIND 
+            --header "Depth: 1" 
+            --connect-timeout $CURL_TIMEOUT 
+            --max-time $((CURL_TIMEOUT * 2)) 
+            -w "
+%{http_code}" 
+            "$url" 2>/dev/null)
         
         local http_code=$(echo "$result" | tail -n1)
         local body=$(echo "$result" | sed '$d')
         
-        if echo "$body" | grep -q "D:href"; then
-            # 解析XML提取文件名
-            echo "$body" | grep -o '<D:href>[^<]*</D:href>' |                 sed 's/<D:href>//g;s/<\/D:href>//g' |                 sed "s|.*${remote_path}/||g" |                 grep -v '^$' | grep -v '/$'
-            return 0
-        else
-            log_error "列出目录失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
-            retry=$((retry + 1))
-            sleep 2
-        fi
+        case "$http_code" in
+            207)
+                # 成功，解析XML提取文件名
+                if echo "$body" | grep -q "D:href"; then
+                    echo "$body" | grep -o '<D:href>[^<]*</D:href>' | 
+                        sed 's/<D:href>//g;s/</D:href>//g' | 
+                        sed "s|.*${remote_path}/||g" | 
+                        grep -v '^$' | grep -v '/$'
+                    return 0
+                else
+                    log_error "目录列表解析失败，响应格式异常"
+                    retry=$((retry + 1))
+                    sleep 2
+                fi
+                ;;
+            401)
+                log_error "认证失败，请检查账号密码"
+                return 1
+                ;;
+            404)
+                log_error "目录不存在: $remote_path"
+                return 1
+                ;;
+            000)
+                log_error "网络连接失败 (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep 3
+                ;;
+            *)
+                log_error "列出目录失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep 2
+                ;;
+        esac
     done
     
     log_error "列出目录失败，已达最大重试次数"
@@ -1699,6 +1716,8 @@ export_config() {
   "username": "$WEBDAV_USER",
   "remote_root": "$REMOTE_ROOT",
   "max_remote_backups": "$MAX_REMOTE",
+  "backup_storage": "$BACKUP_STORAGE",
+  "keep_local_backup": "$KEEP_LOCAL",
   "light_backup": {
     "enabled": "$LIGHT_ENABLED",
     "schedule": "$LIGHT_SCHEDULE",
@@ -1732,16 +1751,49 @@ import_config() {
     log_info "导入配置文件: $config_file"
     
     # 简单解析JSON（使用grep和sed，不依赖jq）
-    local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"\(.*\)".*//')
-    local username=$(grep '"username"' "$config_file" | sed 's/.*: *"\(.*\)".*//')
-    local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\(.*\)".*//')
-    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"\?\([0-9]*\)"\?.*//')
+    # 使用 sed 捕获组，1 引用第一个捕获组
+    local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
+    local username=$(grep '"username"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
+    local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
+    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?([0-9]*)"?.*/1/')
+    local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
+    local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"([^"]*)".*/1/')
     
-    # 应用配置
+    # 轻量备份配置
+    local light_enabled=$(grep -A10 '"light_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"([^"]*)".*/1/')
+    local light_schedule=$(grep -A10 '"light_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"([^"]*)".*/1/')
+    local light_time=$(grep -A10 '"light_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"([^"]*)".*/1/')
+    local light_day=$(grep -A10 '"light_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"([^"]*)".*/1/')
+    local light_day_month=$(grep -A10 '"light_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"([^"]*)".*/1/')
+    
+    # 全量备份配置
+    local full_enabled=$(grep -A10 '"full_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"([^"]*)".*/1/')
+    local full_schedule=$(grep -A10 '"full_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"([^"]*)".*/1/')
+    local full_time=$(grep -A10 '"full_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"([^"]*)".*/1/')
+    local full_day=$(grep -A10 '"full_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"([^"]*)".*/1/')
+    local full_day_month=$(grep -A10 '"full_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"([^"]*)".*/1/')
+    
+    # 应用配置 - 只在值非空时设置
     [ -n "$webdav_url" ] && uci set jianguoyun-backup.global.webdav_url="$webdav_url"
     [ -n "$username" ] && uci set jianguoyun-backup.global.username="$username"
     [ -n "$remote_root" ] && uci set jianguoyun-backup.global.remote_root="$remote_root"
     [ -n "$max_remote" ] && uci set jianguoyun-backup.global.max_remote_backups="$max_remote"
+    [ -n "$backup_storage" ] && uci set jianguoyun-backup.global.backup_storage="$backup_storage"
+    [ -n "$keep_local" ] && uci set jianguoyun-backup.global.keep_local_backup="$keep_local"
+    
+    # 轻量备份配置
+    [ -n "$light_enabled" ] && uci set jianguoyun-backup.light_backup.enabled="$light_enabled"
+    [ -n "$light_schedule" ] && uci set jianguoyun-backup.light_backup.schedule="$light_schedule"
+    [ -n "$light_time" ] && uci set jianguoyun-backup.light_backup.time="$light_time"
+    [ -n "$light_day" ] && uci set jianguoyun-backup.light_backup.day="$light_day"
+    [ -n "$light_day_month" ] && uci set jianguoyun-backup.light_backup.day_month="$light_day_month"
+    
+    # 全量备份配置
+    [ -n "$full_enabled" ] && uci set jianguoyun-backup.full_backup.enabled="$full_enabled"
+    [ -n "$full_schedule" ] && uci set jianguoyun-backup.full_backup.schedule="$full_schedule"
+    [ -n "$full_time" ] && uci set jianguoyun-backup.full_backup.time="$full_time"
+    [ -n "$full_day" ] && uci set jianguoyun-backup.full_backup.day="$full_day"
+    [ -n "$full_day_month" ] && uci set jianguoyun-backup.full_backup.day_month="$full_day_month"
     
     uci commit jianguoyun-backup
     
@@ -1797,7 +1849,7 @@ show_status() {
 
 # 确保日志目录存在
 mkdir -p "$(dirname "$LOG_FILE")"
-mkdir -p "$LOCAL_BACKUP_DIR"
+# LOCAL_BACKUP_DIR 将在 read_config 后由 prepare_temp_dir 创建
 mkdir -p "$(dirname "$STATUS_FILE")"
 
 case "$1" in
