@@ -15,6 +15,10 @@ BACKUP_DIR="/tmp/jianguoyun-backup"
 LOCAL_BACKUP_DIR=""
 # 永久存储的本地备份目录
 PERMANENT_BACKUP_DIR="/etc/jianguoyun-backup/local"
+# 快照存储目录（永久空间，不受 backup_storage 影响）
+SNAPSHOT_STORAGE_DIR="/etc/jianguoyun-backup/snapshots"
+# 快照保留数量
+MAX_SNAPSHOTS=5
 # 临时存储的本地备份目录
 TEMP_BACKUP_DIR="/tmp/jianguoyun-backup/local"
 LOCK_DIR="/var/run/jianguoyun-backup.lock"
@@ -52,8 +56,8 @@ curl_error_msg() {
 
 # 包管理器（自动检测）
 PKG_MANAGER=""
-MAX_LOCAL_BACKUPS=5
-MAX_REMOTE_BACKUPS=10
+DEFAULT_MAX_LOCAL_BACKUPS=5
+DEFAULT_MAX_REMOTE_BACKUPS=10
 CURL_RETRY=2
 CURL_TIMEOUT=30
 CURL_SSL_OPT="-k"
@@ -111,33 +115,84 @@ validate_restore_mode() {
 }
 
 # 简单的 base64 编码加密（混淆用）
+# 密码编码偏移量
+PASSWORD_OFFSET=47
+# 版本前缀，用于区分不同的编码方式
+PASSWORD_VERSION_PREFIX="{v2}"
+
+# 密码编码（字符偏移 + Base64）
 encrypt_password() {
     local plain="$1"
     if [ -z "$plain" ]; then
         echo ""
         return 0
     fi
-    # 简单异或 + base64
-    local encoded=$(echo "$plain" | base64 2>/dev/null)
-    echo "$encoded"
+    
+    local result=""
+    local i=1
+    local len=$(expr length "$plain")
+    
+    while [ $i -le $len ]; do
+        char=$(expr substr "$plain" $i 1)
+        ascii=$(printf "%d" "'$char")
+        new_ascii=$((ascii + PASSWORD_OFFSET))
+        if [ $new_ascii -gt 126 ]; then
+            new_ascii=$((new_ascii - 94))  # 94 = 126 - 32，可打印字符范围
+        fi
+        result="$result$(printf "\\$(printf '%03o' $new_ascii)")"
+        i=$((i + 1))
+    done
+    
+    local encoded=$(printf "%s" "$result" | base64 | tr -d '\n')
+    echo "${PASSWORD_VERSION_PREFIX}${encoded}"
 }
 
-# 解密密码
+# 密码解码
 decrypt_password() {
     local encoded="$1"
     if [ -z "$encoded" ]; then
         echo ""
         return 0
     fi
-    local plain=$(echo "$encoded" | base64 -d 2>/dev/null)
-    if [ -z "$plain" ]; then
-        # 如果解密失败，可能是明文密码，直接返回
-        echo "$encoded"
+    
+    # 检查是否是 v2 格式
+    if echo "$encoded" | grep -q '^{v2}'; then
+        local data=$(echo "$encoded" | sed 's/^{v2}//')
+        local decoded=$(printf "%s" "$data" | base64 -d 2>/dev/null)
+        
+        if [ -z "$decoded" ]; then
+            echo ""
+            return 0
+        fi
+        
+        local result=""
+        local i=1
+        local len=$(expr length "$decoded")
+        
+        while [ $i -le $len ]; do
+            char=$(expr substr "$decoded" $i 1)
+            ascii=$(printf "%d" "'$char")
+            new_ascii=$((ascii - PASSWORD_OFFSET))
+            if [ $new_ascii -lt 32 ]; then
+                new_ascii=$((new_ascii + 94))
+            fi
+            result="$result$(printf "\\$(printf '%03o' $new_ascii)")"
+            i=$((i + 1))
+        done
+        
+        echo "$result"
+        return 0
     else
-        echo "$plain"
+        # 旧格式：纯 base64 或明文（向后兼容）
+        local plain=$(printf "%s" "$encoded" | base64 -d 2>/dev/null)
+        if [ -n "$plain" ] && ! printf "%s" "$plain" | grep -q '[^[:print:]]'; then
+            echo "$plain"
+        else
+            echo "$encoded"
+        fi
+        return 0
     fi
 }
-
 # 记录审计日志
 log_audit() {
     local action="$1"
@@ -374,25 +429,25 @@ estimate_backup_size() {
     local type="$1"
     local estimated_size=0
     
-    # 统计 /etc 目录大小
+    # 统计 /etc 目录大小（系统配置 + 所有插件配置）
     if [ -d /etc ]; then
         local etc_size=$(du -sk /etc 2>/dev/null | awk '{print $1}')
         estimated_size=$((estimated_size + etc_size * 1024))
     fi
     
-    # 统计插件配置目录大小
-    local plugin_dirs="/etc/AdGuardHome /etc/openclash /etc/passwall /etc/shadowvpn /etc/v2ray /etc/trojan /etc/xray /etc/ssrplus /etc/aria2 /etc/transmission /etc/samba /etc/vsftpd /etc/nginx /etc/uhttpd"
-    for dir in $plugin_dirs; do
-        if [ -d "$dir" ]; then
-            local dir_size=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
-            estimated_size=$((estimated_size + dir_size * 1024))
-        fi
-    done
-    
-    # 如果是全量备份，加上插件包的预估大小
+    # 如果是全量备份，加上已安装插件包的预估大小
     if [ "$type" = "full" ]; then
-        # 预估每个插件包约 50KB，按 200 个插件计算
-        estimated_size=$((estimated_size + 200 * 50 * 1024))
+        # 检测包管理器并统计已安装包数量
+        detect_pkg_manager
+        local pkg_count=$(list_installed_packages | wc -l)
+        
+        if [ "$pkg_count" -gt 0 ]; then
+            # 按每个插件包平均 80KB 估算（保守估计）
+            estimated_size=$((estimated_size + pkg_count * 80 * 1024))
+        else
+            # 如果无法统计，按默认 100 个插件估算
+            estimated_size=$((estimated_size + 100 * 80 * 1024))
+        fi
     fi
     
     # 压缩后大约是原始大小的 50%
@@ -456,12 +511,20 @@ trap cleanup_temp_files EXIT INT TERM HUP
 
 # ==================== 日志函数 ====================
 
+# 日志写入计数器，每写10条检查一次轮转LOG_WRITE_COUNT=0
 log() {
     local level="$1"
     local message="$2"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
     # 限制日志大小（按行数和大小双重限制）
+    # 每写10条日志才检查一次轮转，减少频繁文件操作
+    LOG_WRITE_COUNT=$((LOG_WRITE_COUNT + 1))
+    if [ $LOG_WRITE_COUNT -lt 10 ]; then
+        return 0
+    fi
+    LOG_WRITE_COUNT=0
+    
     if [ -f "$LOG_FILE" ]; then
         local log_size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
         local lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
@@ -497,7 +560,8 @@ read_config() {
     WEBDAV_USER=$(uci -q get jianguoyun-backup.global.username)
     WEBDAV_PASS_ENC=$(uci -q get jianguoyun-backup.global.password)
     REMOTE_ROOT=$(uci -q get jianguoyun-backup.global.remote_root)
-    MAX_REMOTE=$(uci -q get jianguoyun-backup.global.max_remote_backups)
+    MAX_REMOTE_BACKUPS=$(uci -q get jianguoyun-backup.global.max_remote_backups)
+    MAX_LOCAL_BACKUPS=$(uci -q get jianguoyun-backup.global.max_local_backups)
     BACKUP_STORAGE=$(uci -q get jianguoyun-backup.global.backup_storage)
     KEEP_LOCAL=$(uci -q get jianguoyun-backup.global.keep_local_backup)
     
@@ -534,7 +598,8 @@ read_config() {
     # 默认值
     [ -z "$WEBDAV_URL" ] && WEBDAV_URL="https://dav.jianguoyun.com/dav/"
     [ -z "$REMOTE_ROOT" ] && REMOTE_ROOT="OpenWrt_Backup"
-    [ -z "$MAX_REMOTE" ] && MAX_REMOTE="$MAX_REMOTE_BACKUPS"
+    [ -z "$MAX_REMOTE_BACKUPS" ] && MAX_REMOTE_BACKUPS="$DEFAULT_MAX_REMOTE_BACKUPS"
+    [ -z "$MAX_LOCAL_BACKUPS" ] && MAX_LOCAL_BACKUPS="$DEFAULT_MAX_LOCAL_BACKUPS"
     [ -z "$BACKUP_STORAGE" ] && BACKUP_STORAGE="tmp"
     [ -z "$KEEP_LOCAL" ] && KEEP_LOCAL="0"
     [ -z "$LIGHT_SCHEDULE" ] && LIGHT_SCHEDULE="daily"
@@ -1059,6 +1124,11 @@ do_light_backup() {
         return 1
     }
     
+    
+    # 统计备份文件数量和原始大小
+    BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
+    BACKUP_TOTAL_SIZE=$(du -sb "$BACKUP_DIR" 2>/dev/null | awk "{print $1}")
+    log_info "备份统计：共 $BACKUP_FILE_COUNT 个文件，原始大小 $((BACKUP_TOTAL_SIZE / 1024)) KB"
     if tar czf "$local_file" system_config plugin_data 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
         log_success "轻量备份包生成成功，大小: $size"
@@ -1074,7 +1144,9 @@ do_light_backup() {
         # 上传到坚果云
         if webdav_upload "$local_file" "$remote_path"; then
             # 上传校验和文件
-            webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null
+            if ! webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null; then
+                log_warning "校验和文件上传失败，不影响备份文件本身"
+            fi
             log_success "轻量备份上传成功"
             
             # 根据配置决定是否保留本地备份
@@ -1086,7 +1158,7 @@ do_light_backup() {
             
             # 清理云端旧备份
             update_status "running" "90" "清理旧备份..."
-            cleanup_remote_backups "light" "$MAX_REMOTE"
+            cleanup_remote_backups "light" "$MAX_REMOTE_BACKUPS"
             
             # 清理本地旧备份
             cleanup_local_backups "light"
@@ -1108,9 +1180,11 @@ do_light_backup() {
             log_success "备份统计："
             log_success "  • 备份文件: $filename"
             log_success "  • 备份大小: $size"
+            log_success "  • 文件数量: $BACKUP_FILE_COUNT 个"
+            log_success "  • 原始大小: $((BACKUP_TOTAL_SIZE / 1024)) KB"
             log_success "  • 备份类型: 轻量备份"
             log_success "  • 耗时: $duration_str"
-            log_success "  • 云端保留: $MAX_REMOTE 个"
+            log_success "  • 云端保留: $MAX_REMOTE_BACKUPS 个"
             
             update_status "success" "100" "轻量备份完成（耗时 $duration_str）"
             log_audit "light_backup" "success" "备份完成，大小: $size，耗时: $duration_str"
@@ -1183,6 +1257,11 @@ do_full_backup() {
         return 1
     }
     
+    
+    # 统计备份文件数量和原始大小
+    BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
+    BACKUP_TOTAL_SIZE=$(du -sb "$BACKUP_DIR" 2>/dev/null | awk "{print $1}")
+    log_info "备份统计：共 $BACKUP_FILE_COUNT 个文件，原始大小 $((BACKUP_TOTAL_SIZE / 1024)) KB"
     if tar czf "$local_file" system_config plugin_data plugin_bin 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
         log_success "全量备份包生成成功，大小: $size"
@@ -1198,7 +1277,9 @@ do_full_backup() {
         # 上传到坚果云
         if webdav_upload "$local_file" "$remote_path"; then
             # 上传校验和文件
-            webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null
+            if ! webdav_upload "${local_file}.md5" "${remote_path}.md5" 2>/dev/null; then
+                log_warning "校验和文件上传失败，不影响备份文件本身"
+            fi
             log_success "全量备份上传成功"
             
             # 根据配置决定是否保留本地备份
@@ -1210,7 +1291,7 @@ do_full_backup() {
             
             # 清理云端旧备份
             update_status "running" "95" "清理旧备份..."
-            cleanup_remote_backups "full" "$MAX_REMOTE"
+            cleanup_remote_backups "full" "$MAX_REMOTE_BACKUPS"
             
             # 清理本地旧备份
             cleanup_local_backups "full"
@@ -1232,9 +1313,11 @@ do_full_backup() {
             log_success "备份统计："
             log_success "  • 备份文件: $filename"
             log_success "  • 备份大小: $size"
+            log_success "  • 文件数量: $BACKUP_FILE_COUNT 个"
+            log_success "  • 原始大小: $((BACKUP_TOTAL_SIZE / 1024)) KB"
             log_success "  • 备份类型: 全量备份"
             log_success "  • 耗时: $duration_str"
-            log_success "  • 云端保留: $MAX_REMOTE 个"
+            log_success "  • 云端保留: $MAX_REMOTE_BACKUPS 个"
             
             update_status "success" "100" "全量备份完成（耗时 $duration_str）"
             log_audit "full_backup" "success" "备份完成，大小: $size，耗时: $duration_str"
@@ -1281,9 +1364,10 @@ create_snapshot() {
     log_info "创建当前配置快照（恢复前保护）"
     
     get_device_info
-    local snapshot_file="$LOCAL_BACKUP_DIR/snapshot_${TIMESTAMP}.tar.gz"
+    local snapshot_file="$SNAPSHOT_STORAGE_DIR/snapshot_${TIMESTAMP}.tar.gz"
     
     mkdir -p "$SNAPSHOT_DIR"
+    mkdir -p "$SNAPSHOT_STORAGE_DIR"
     
     # 备份整个 /etc 目录（排除运行时生成的文件）
     log_info "备份整个 /etc 目录到快照..."
@@ -1296,6 +1380,7 @@ create_snapshot() {
     if [ -s "$snapshot_file" ]; then
         local size=$(du -h "$snapshot_file" | awk '{print $1}')
         log_success "配置快照已保存: $snapshot_file (大小: $size)"
+                # 清理旧快照        cleanup_snapshots
         log_info "提示：如需回滚，可手动解压此文件到 / 目录"
         return 0
     else
@@ -1305,6 +1390,29 @@ create_snapshot() {
 }
 
 # 列出云端备份文件
+
+# 清理旧快照（保留最近 MAX_SNAPSHOTS 个）
+cleanup_snapshots() {
+    if [ ! -d "$SNAPSHOT_STORAGE_DIR" ]; then
+        return 0
+    fi
+    
+    log_info "清理旧快照，保留最近 $MAX_SNAPSHOTS 个"
+    
+    # 按时间排序，删除超过保留数量的旧快照
+    local count=0
+    local files=$(ls -t "$SNAPSHOT_STORAGE_DIR"/snapshot_*.tar.gz 2>/dev/null)
+    
+    for file in $files; do
+        count=$((count + 1))
+        if [ $count -gt $MAX_SNAPSHOTS ]; then
+            rm -f "$file"
+            log_info "删除旧快照: $(basename "$file")"
+        fi
+    done
+    
+    return 0
+}
 list_remote_backups() {
     read_config
     
@@ -1563,7 +1671,9 @@ do_restore() {
     update_status "running" "30" "验证文件完整性..."
     local checksum_file="${local_file}.md5"
     local remote_checksum="${remote_path}.md5"
-    webdav_download "$remote_checksum" "$checksum_file" 2>/dev/null
+    if ! webdav_download "$remote_checksum" "$checksum_file" 2>/dev/null; then
+        log_warning "校验和文件下载失败，将跳过完整性验证"
+    fi
     
     if [ -f "$checksum_file" ] && [ -s "$checksum_file" ]; then
         local expected=$(awk '{print $1}' "$checksum_file")
@@ -1637,7 +1747,9 @@ do_restore() {
     
     update_status "success" "100" "恢复完成"
     log_success "========== 恢复操作完成 =========="
-    log_info "提示：部分配置可能需要重启路由器后生效"
+    log_warning "注意：配置已恢复，但部分服务可能需要重启才能生效"
+    log_warning "建议重启路由器以确保所有配置完全生效"
+    log_info "提示：网络、防火墙、服务类配置通常需要重启后生效"
     log_audit "restore" "success" "恢复完成"
     return 0
 }
@@ -1645,6 +1757,18 @@ do_restore() {
 # ==================== 定时任务管理 ====================
 
 # 设置定时任务
+
+# 验证时间格式（HH:MM）
+validate_time_format() {
+    local time_str="$1"
+    
+    # 检查是否匹配 HH:MM 格式
+    if echo "$time_str" | grep -qE '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; then
+        return 0
+    else
+        return 1
+    fi
+}
 setup_cron() {
     read_config
     
@@ -1655,6 +1779,7 @@ setup_cron() {
     
     # 轻量备份定时任务
     if [ "$LIGHT_ENABLED" = "1" ]; then
+                # 验证时间格式        if ! validate_time_format "$LIGHT_TIME"; then            log_warning "轻量备份时间格式错误: $LIGHT_TIME，使用默认值 03:00"            LIGHT_TIME="03:00"        fi
         local hour minute
         hour=$(echo "$LIGHT_TIME" | cut -d: -f1)
         minute=$(echo "$LIGHT_TIME" | cut -d: -f2)
@@ -1677,6 +1802,7 @@ setup_cron() {
     
     # 全量备份定时任务
     if [ "$FULL_ENABLED" = "1" ]; then
+                # 验证时间格式        if ! validate_time_format "$FULL_TIME"; then            log_warning "全量备份时间格式错误: $FULL_TIME，使用默认值 04:00"            FULL_TIME="04:00"        fi
         local hour minute
         hour=$(echo "$FULL_TIME" | cut -d: -f1)
         minute=$(echo "$FULL_TIME" | cut -d: -f2)
@@ -1715,7 +1841,7 @@ export_config() {
   "webdav_url": "$WEBDAV_URL",
   "username": "$WEBDAV_USER",
   "remote_root": "$REMOTE_ROOT",
-  "max_remote_backups": "$MAX_REMOTE",
+  "max_remote_backups": "$MAX_REMOTE_BACKUPS",
   "backup_storage": "$BACKUP_STORAGE",
   "keep_local_backup": "$KEEP_LOCAL",
   "light_backup": {
