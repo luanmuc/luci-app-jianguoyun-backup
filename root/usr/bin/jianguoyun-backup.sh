@@ -137,11 +137,11 @@ encrypt_password() {
     local i=1
     local len=$(expr length "$plain")
     
-    while [ $i -le $len ]; do
+    while [ "$i" -le "$len" ]; do
         char=$(expr substr "$plain" $i 1)
         ascii=$(printf "%d" "'$char")
         new_ascii=$((ascii + PASSWORD_OFFSET))
-        if [ $new_ascii -gt 126 ]; then
+        if [ "$new_ascii" -gt 126 ]; then
             new_ascii=$((new_ascii - 94))  # 94 = 126 - 32，可打印字符范围
         fi
         result="$result$(printf "\\$(printf '%03o' $new_ascii)")"
@@ -174,11 +174,11 @@ decrypt_password() {
         local i=1
         local len=$(expr length "$decoded")
         
-        while [ $i -le $len ]; do
+        while [ "$i" -le "$len" ]; do
             char=$(expr substr "$decoded" $i 1)
             ascii=$(printf "%d" "'$char")
             new_ascii=$((ascii - PASSWORD_OFFSET))
-            if [ $new_ascii -lt 32 ]; then
+            if [ "$new_ascii" -lt 32 ]; then
                 new_ascii=$((new_ascii + 94))
             fi
             result="$result$(printf "\\$(printf '%03o' $new_ascii)")"
@@ -526,7 +526,7 @@ log() {
     # 限制日志大小（按行数和大小双重限制）
     # 每写10条日志才检查一次轮转，减少频繁文件操作
     LOG_WRITE_COUNT=$((LOG_WRITE_COUNT + 1))
-    if [ $LOG_WRITE_COUNT -lt 10 ]; then
+    if [ "$LOG_WRITE_COUNT" -lt 10 ]; then
         return 0
     fi
     LOG_WRITE_COUNT=0
@@ -649,12 +649,25 @@ cleanup_temp() {
 # WebDAV创建目录
 webdav_mkdir() {
     local remote_path="$1"
+    
+    # 参数验证
+    if [ -z "$remote_path" ]; then
+        log_error "webdav_mkdir: 远程路径不能为空"
+        return 1
+    fi
+    
+    # 检查路径遍历
+    if echo "$remote_path" | grep -q '\.\.'; then
+        log_error "webdav_mkdir: 路径包含非法字符: $remote_path"
+        return 1
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     log_info "创建远端目录: $remote_path"
     
     local retry=0
-    while [ $retry -le $CURL_RETRY ]; do
+    while [ "$retry" -le "$CURL_RETRY" ]; do
         local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --request MKCOL             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 2))             "$url" 2>/dev/null)
         
         case "$http_code" in
@@ -682,6 +695,24 @@ webdav_mkdir() {
 webdav_upload() {
     local local_file="$1"
     local remote_path="$2"
+    
+    # 参数验证
+    if [ -z "$local_file" ] || [ -z "$remote_path" ]; then
+        log_error "webdav_upload: 参数不能为空"
+        return 1
+    fi
+    
+    # 检查路径遍历
+    if echo "$remote_path" | grep -q '\.\.'; then
+        log_error "webdav_upload: 远程路径包含非法字符: $remote_path"
+        return 1
+    fi
+    
+    if echo "$local_file" | grep -q '\.\.'; then
+        log_error "webdav_upload: 本地路径包含非法字符: $local_file"
+        return 1
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     log_info "上传文件: $local_file -> $remote_path"
@@ -695,7 +726,7 @@ webdav_upload() {
     log_info "文件大小: $file_size"
     
     local retry=0
-    while [ $retry -le $CURL_RETRY ]; do
+    while [ "$retry" -le "$CURL_RETRY" ]; do
         local tmp_output="/tmp/curl_upload_$$"
         local http_code
         local curl_exit=0
@@ -757,12 +788,30 @@ webdav_upload() {
 webdav_download() {
     local remote_path="$1"
     local local_file="$2"
+    
+    # 参数验证
+    if [ -z "$remote_path" ] || [ -z "$local_file" ]; then
+        log_error "webdav_download: 参数不能为空"
+        return 1
+    fi
+    
+    # 检查路径遍历
+    if echo "$remote_path" | grep -q '\.\.'; then
+        log_error "webdav_download: 远程路径包含非法字符: $remote_path"
+        return 1
+    fi
+    
+    if echo "$local_file" | grep -q '\.\.'; then
+        log_error "webdav_download: 本地路径包含非法字符: $local_file"
+        return 1
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     log_info "下载文件: $remote_path -> $local_file"
     
     local retry=0
-    while [ $retry -le $CURL_RETRY ]; do
+    while [ "$retry" -le "$CURL_RETRY" ]; do
         local http_code=$(curl -s $CURL_SSL_OPT -o "$local_file" -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 10))             "$url" 2>/dev/null)
         
         case "$http_code" in
@@ -800,10 +849,23 @@ webdav_download() {
 # WebDAV列出目录
 webdav_list() {
     local remote_path="$1"
+    
+    # 参数验证
+    if [ -z "$remote_path" ]; then
+        log_error "webdav_list: 远程路径不能为空"
+        return 1
+    fi
+    
+    # 检查路径遍历
+    if echo "$remote_path" | grep -q '\.\.'; then
+        log_error "webdav_list: 路径包含非法字符: $remote_path"
+        return 1
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     local retry=0
-    while [ $retry -le $CURL_RETRY ]; do
+    while [ "$retry" -le "$CURL_RETRY" ]; do
         local result=$(curl -s $CURL_SSL_OPT 
             --user "${WEBDAV_USER}:${WEBDAV_PASS}" 
             --request PROPFIND 
@@ -860,6 +922,19 @@ webdav_list() {
 # WebDAV删除文件
 webdav_delete() {
     local remote_path="$1"
+    
+    # 参数验证
+    if [ -z "$remote_path" ]; then
+        log_error "webdav_delete: 远程路径不能为空"
+        return 1
+    fi
+    
+    # 检查路径遍历
+    if echo "$remote_path" | grep -q '\.\.'; then
+        log_error "webdav_delete: 路径包含非法字符: $remote_path"
+        return 1
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     log_info "删除远端文件: $remote_path"
@@ -1074,7 +1149,7 @@ cleanup_remote_backups() {
     
     for file in $files; do
         count=$((count + 1))
-        if [ $count -gt $max_count ]; then
+        if [ "$count" -gt "$max_count" ]; then
             webdav_delete "${REMOTE_ROOT}/${type}/${file}"
             log_info "删除云端旧备份: $file"
         fi
@@ -1175,7 +1250,7 @@ do_light_backup() {
             BACKUP_END_TIME=$(date +%s)
             local duration=$((BACKUP_END_TIME - BACKUP_START_TIME))
             local duration_str=""
-            if [ $duration -ge 60 ]; then
+            if [ "$duration" -ge 60 ]; then
                 duration_str="$((duration / 60))分$((duration % 60))秒"
             else
                 duration_str="${duration}秒"
@@ -1308,7 +1383,7 @@ do_full_backup() {
             BACKUP_END_TIME=$(date +%s)
             local duration=$((BACKUP_END_TIME - BACKUP_START_TIME))
             local duration_str=""
-            if [ $duration -ge 60 ]; then
+            if [ "$duration" -ge 60 ]; then
                 duration_str="$((duration / 60))分$((duration % 60))秒"
             else
                 duration_str="${duration}秒"
@@ -1350,12 +1425,11 @@ cleanup_local_backups() {
     
     log_info "清理本地${type}旧备份，保留最近 $MAX_LOCAL_BACKUPS 个"
     
-    local files=$(ls -t "$LOCAL_BACKUP_DIR"/${type}_*.tar.gz 2>/dev/null)
     local count=0
     
-    for file in $files; do
+    ls -t "$LOCAL_BACKUP_DIR"/${type}_*.tar.gz 2>/dev/null | while read -r file; do
         count=$((count + 1))
-        if [ $count -gt $MAX_LOCAL_BACKUPS ]; then
+        if [ "$count" -gt "$MAX_LOCAL_BACKUPS" ]; then
             rm -f "$file"
             rm -f "${file}.md5"
             log_info "删除旧备份: $(basename "$file")"
@@ -1417,11 +1491,10 @@ cleanup_snapshots() {
     
     # 按时间排序，删除超过保留数量的旧快照
     local count=0
-    local files=$(ls -t "$SNAPSHOT_STORAGE_DIR"/snapshot_*.tar.gz 2>/dev/null)
     
-    for file in $files; do
+    ls -t "$SNAPSHOT_STORAGE_DIR"/snapshot_*.tar.gz 2>/dev/null | while read -r file; do
         count=$((count + 1))
-        if [ $count -gt $MAX_SNAPSHOTS ]; then
+        if [ "$count" -gt "$MAX_SNAPSHOTS" ]; then
             rm -f "$file"
             log_info "删除旧快照: $(basename "$file")"
         fi
@@ -1860,6 +1933,7 @@ export_config() {
   "username": "$WEBDAV_USER",
   "remote_root": "$REMOTE_ROOT",
   "max_remote_backups": "$MAX_REMOTE_BACKUPS",
+  "max_local_backups": "$MAX_LOCAL_BACKUPS",
   "backup_storage": "$BACKUP_STORAGE",
   "keep_local_backup": "$KEEP_LOCAL",
   "light_backup": {
@@ -1906,6 +1980,7 @@ import_config() {
     local username=$(grep '"username"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
+    local max_local=$(grep '"max_local_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
     local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     
@@ -2010,6 +2085,7 @@ import_config() {
     [ -n "$username" ] && uci set jianguoyun-backup.global.username="$username"
     [ -n "$remote_root" ] && uci set jianguoyun-backup.global.remote_root="$remote_root"
     [ -n "$max_remote" ] && uci set jianguoyun-backup.global.max_remote_backups="$max_remote"
+    [ -n "$max_local" ] && uci set jianguoyun-backup.global.max_local_backups="$max_local"
     [ -n "$backup_storage" ] && uci set jianguoyun-backup.global.backup_storage="$backup_storage"
     [ -n "$keep_local" ] && uci set jianguoyun-backup.global.keep_local_backup="$keep_local"
     
