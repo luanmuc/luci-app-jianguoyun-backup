@@ -32,11 +32,28 @@ local function encrypt_password(password)
     if not password or password == "" then
         return ""
     end
-    -- 使用 base64 简单编码
+    
+    -- v2 格式：字符偏移 + base64，与 Shell 端保持一致
+    local PASSWORD_OFFSET = 47
+    local PASSWORD_VERSION_PREFIX = "{v2}"
+    
+    local result = ""
+    for i = 1, #password do
+        local char = password:sub(i, i)
+        local ascii = string.byte(char)
+        local new_ascii = ascii + PASSWORD_OFFSET
+        if new_ascii > 126 then
+            new_ascii = new_ascii - 94  -- 94 = 126 - 32，可打印字符范围
+        end
+        result = result .. string.char(new_ascii)
+    end
+    
+    -- base64 编码
     local sys = require "luci.sys"
-    local result = sys.exec("echo '" .. password:gsub("'", "'\\''") .. "' | base64 2>/dev/null")
-    result = result:gsub("%s+", "")
-    return result
+    local encoded = sys.exec("printf '%s' '" .. result:gsub("'", "'\\''") .. "' | base64 2>/dev/null")
+    encoded = encoded:gsub("%s+", "")
+    
+    return PASSWORD_VERSION_PREFIX .. encoded
 end
 
 -- 测试WebDAV连接
