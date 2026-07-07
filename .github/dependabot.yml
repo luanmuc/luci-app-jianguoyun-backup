@@ -1,0 +1,19 @@
+# Dependabot 自动更新配置
+# 自动更新 GitHub Actions 依赖版本
+
+version: 2
+updates:
+  # GitHub Actions 版本更新
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "03:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
