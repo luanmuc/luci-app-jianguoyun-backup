@@ -92,6 +92,9 @@ endef
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 设置配置文件权限，只有 root 可读
+	chmod 600 /etc/config/jianguoyun-backup 2>/dev/null || true
+	
 	if [ -x /etc/init.d/jianguoyun-backup ]; then
 		/etc/init.d/jianguoyun-backup enable
 		/etc/init.d/jianguoyun-backup start
