@@ -18,6 +18,7 @@ uci -q get jianguoyun-backup.global >/dev/null || {
     uci set jianguoyun-backup.global.max_local_backups='5'
     uci set jianguoyun-backup.global.backup_storage='tmp'
     uci set jianguoyun-backup.global.keep_local_backup='0'
+    uci set jianguoyun-backup.global.config_version='1'
 }
 
 uci -q get jianguoyun-backup.light_backup >/dev/null || {
@@ -39,6 +40,9 @@ uci -q get jianguoyun-backup.full_backup >/dev/null || {
 }
 
 uci commit jianguoyun-backup
+
+# 设置配置文件权限，只有 root 可读
+chmod 600 /etc/config/jianguoyun-backup 2>/dev/null || true
 
 # 创建本地备份和日志目录
 mkdir -p /etc/jianguoyun-backup/local
