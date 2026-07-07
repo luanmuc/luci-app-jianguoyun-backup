@@ -20,7 +20,6 @@ endif
 
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-3.0
-PKG_MAINTAINER:=OpenWrt Community
 
 include $(INCLUDE_DIR)/package.mk
 
