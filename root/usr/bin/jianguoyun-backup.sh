@@ -58,6 +58,13 @@ curl_error_msg() {
 PKG_MANAGER=""
 DEFAULT_MAX_LOCAL_BACKUPS=5
 DEFAULT_MAX_REMOTE_BACKUPS=10
+
+# 备份大小估算相关常量
+ESTIMATE_PKG_SIZE_KB=80          # 每个插件包平均大小（KB，保守估计）
+ESTIMATE_DEFAULT_PKG_COUNT=100   # 默认估算的插件数量（无法统计时使用）
+ESTIMATE_COMPRESS_RATIO=2        # 压缩比（原始大小/压缩后大小，即压缩后约为原始的50%）
+DISK_SPACE_MARGIN=20             # 磁盘空间安全余量百分比
+
 CURL_RETRY=2
 CURL_TIMEOUT=30
 CURL_SSL_OPT="-k"
@@ -72,14 +79,12 @@ validate_filename() {
     
     # 空文件名
     if [ -z "$filename" ]; then
-        log_error "文件名不能为空"
         return 1
     fi
     
     # 正则验证：只允许字母、数字、下划线、点、横杠
     # 自动排除路径遍历（..、/）、命令注入（$、`、;、|、&、*）等
     if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
-        log_error "文件名包含非法字符: $filename"
         return 1
     fi
     
@@ -412,7 +417,7 @@ check_disk_space() {
     local available_bytes=$((available_space * 1024))
     
     # 添加 20% 的安全余量
-    local required_bytes=$((estimated_size * 120 / 100))
+    local required_bytes=$((estimated_size * (100 + DISK_SPACE_MARGIN) / 100))
     
     log_info "磁盘剩余空间: $((available_space / 1024)) MB，预估需要: $((required_bytes / 1024 / 1024)) MB"
     
@@ -443,15 +448,15 @@ estimate_backup_size() {
         
         if [ "$pkg_count" -gt 0 ]; then
             # 按每个插件包平均 80KB 估算（保守估计）
-            estimated_size=$((estimated_size + pkg_count * 80 * 1024))
+            estimated_size=$((estimated_size + pkg_count * ESTIMATE_PKG_SIZE_KB * 1024))
         else
             # 如果无法统计，按默认 100 个插件估算
-            estimated_size=$((estimated_size + 100 * 80 * 1024))
+            estimated_size=$((estimated_size + ESTIMATE_DEFAULT_PKG_COUNT * ESTIMATE_PKG_SIZE_KB * 1024))
         fi
     fi
     
     # 压缩后大约是原始大小的 50%
-    estimated_size=$((estimated_size / 2))
+    estimated_size=$((estimated_size / ESTIMATE_COMPRESS_RATIO))
     
     echo "$estimated_size"
 }
@@ -1372,19 +1377,29 @@ create_snapshot() {
     # 备份整个 /etc 目录（排除运行时生成的文件）
     log_info "备份整个 /etc 目录到快照..."
     cd /
-    tar czf "$snapshot_file"         --exclude='/etc/rc.d/S*'         --exclude='/etc/modules-boot.d/*'         --exclude='/etc/modules.d/*'         --exclude='/etc/init.d/*'         --exclude='/etc/hotplug.d/*'         --exclude='/etc/config/luci*'         --exclude='/etc/jianguoyun-backup/local/*'         etc 2>/dev/null
-    cd /
-    
-    rm -rf "$SNAPSHOT_DIR"
-    
-    if [ -s "$snapshot_file" ]; then
-        local size=$(du -h "$snapshot_file" | awk '{print $1}')
-        log_success "配置快照已保存: $snapshot_file (大小: $size)"
-                # 清理旧快照        cleanup_snapshots
-        log_info "提示：如需回滚，可手动解压此文件到 / 目录"
-        return 0
+    if tar czf "$snapshot_file"         --exclude='/etc/rc.d/S*'         --exclude='/etc/modules-boot.d/*'         --exclude='/etc/modules.d/*'         --exclude='/etc/init.d/*'         --exclude='/etc/hotplug.d/*'         --exclude='/etc/config/luci*'         --exclude='/etc/jianguoyun-backup/local/*'         etc 2>/dev/null; then
+        cd /
+        rm -rf "$SNAPSHOT_DIR"
+        
+        if [ -s "$snapshot_file" ]; then
+            local size=$(du -h "$snapshot_file" | awk '{print $1}')
+            log_success "配置快照已保存: $snapshot_file (大小: $size)"
+            # 清理旧快照
+            cleanup_snapshots
+            log_info "提示：如需回滚，可手动解压此文件到 / 目录"
+            return 0
+        else
+            cd /
+            rm -rf "$SNAPSHOT_DIR"
+            log_error "配置快照创建失败：文件为空"
+            rm -f "$snapshot_file"
+            return 1
+        fi
     else
-        log_error "配置快照创建失败"
+        cd /
+        rm -rf "$SNAPSHOT_DIR"
+        log_error "配置快照创建失败：tar命令执行失败"
+        rm -f "$snapshot_file"
         return 1
     fi
 }
@@ -1439,18 +1454,10 @@ download_backup() {
     esac
     
     # 验证文件名，只允许安全字符，防止路径遍历
-    if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+    if ! validate_filename "$filename"; then
         echo "错误：文件名包含非法字符"
         return 1
     fi
-    
-    # 额外检查：禁止路径遍历字符
-    case "$filename" in
-        *..*|*/*|*\$*|*\`*)
-            echo "错误：文件名包含非法字符"
-            return 1
-            ;;
-    esac
     
     read_config
     
@@ -1621,18 +1628,10 @@ do_restore() {
     esac
     
     # 验证文件名，只允许安全字符，防止路径遍历
-    if ! echo "$filename" | grep -qE '^[a-zA-Z0-9._-]+$'; then
-        log_error "文件名包含非法字符"
+    if ! validate_filename "$filename"; then
+        log_error "文件名包含非法字符: $filename"
         return 1
     fi
-    
-    # 额外检查：禁止路径遍历字符
-    case "$filename" in
-        *..*|*/*|*\$*|*\`*)
-            log_error "文件名包含非法字符"
-            return 1
-            ;;
-    esac
     
     # 验证恢复模式
     case "$mode" in
@@ -1876,30 +1875,118 @@ import_config() {
     
     log_info "导入配置文件: $config_file"
     
-    # 简单解析JSON（使用grep和sed，不依赖jq）
-    # 使用 sed 捕获组，\1 引用第一个捕获组
+    # 简单验证 JSON 格式
+    if ! head -1 "$config_file" | grep -q '^{'; then
+        echo "错误：配置文件格式不正确"
+        log_error "配置导入失败：文件格式不是有效的JSON"
+        return 1
+    fi
+    
+    # 解析基础配置
     local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local username=$(grep '"username"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"\?\([0-9]*\)"\?.*/\1/')
+    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
     local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
     
-    # 轻量备份配置
-    local light_enabled=$(grep -A10 '"light_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_schedule=$(grep -A10 '"light_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_time=$(grep -A10 '"light_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_day=$(grep -A10 '"light_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_day_month=$(grep -A10 '"light_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    # 提取 light_backup 对象内容（从 { 到 }）
+    local light_section=$(sed -n '/"light_backup": {/,/},/p' "$config_file" | sed '1d;$d')
     
-    # 全量备份配置
-    local full_enabled=$(grep -A10 '"full_backup"' "$config_file" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_schedule=$(grep -A10 '"full_backup"' "$config_file" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_time=$(grep -A10 '"full_backup"' "$config_file" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_day=$(grep -A10 '"full_backup"' "$config_file" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_day_month=$(grep -A10 '"full_backup"' "$config_file" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    # 提取 full_backup 对象内容
+    local full_section=$(sed -n '/"full_backup": {/,/},/p' "$config_file" | sed '1d;$d')
     
-    # 应用配置 - 只在值非空时设置
+    # 如果提取失败，回退到 grep -A20 的方式
+    if [ -z "$light_section" ]; then
+        light_section=$(grep -A20 '"light_backup"' "$config_file")
+    fi
+    if [ -z "$full_section" ]; then
+        full_section=$(grep -A20 '"full_backup"' "$config_file")
+    fi
+    
+    # 解析轻量备份配置
+    local light_enabled=$(echo "$light_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_schedule=$(echo "$light_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_time=$(echo "$light_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_day=$(echo "$light_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local light_day_month=$(echo "$light_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    
+    # 解析全量备份配置
+    local full_enabled=$(echo "$full_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_schedule=$(echo "$full_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_time=$(echo "$full_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_day=$(echo "$full_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    local full_day_month=$(echo "$full_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    
+    # 值验证 - WebDAV地址格式
+    if [ -n "$webdav_url" ]; then
+        if ! echo "$webdav_url" | grep -qE '^https?://'; then
+            echo "警告：WebDAV地址格式不正确，已跳过"
+            log_warning "配置导入：WebDAV地址格式不正确，已跳过"
+            webdav_url=""
+        fi
+    fi
+    
+    # 值验证 - 数字范围
+    if [ -n "$max_remote" ]; then
+        if ! echo "$max_remote" | grep -qE '^[0-9]+$' || [ "$max_remote" -lt 1 ] || [ "$max_remote" -gt 100 ]; then
+            echo "警告：云端备份保留数量无效，已跳过"
+            log_warning "配置导入：云端备份保留数量无效，已跳过"
+            max_remote=""
+        fi
+    fi
+    
+    # 值验证 - 备份存储位置
+    if [ -n "$backup_storage" ]; then
+        case "$backup_storage" in
+            tmp|permanent) ;;
+            *)
+                echo "警告：备份存储位置无效，已跳过"
+                log_warning "配置导入：备份存储位置无效，已跳过"
+                backup_storage=""
+                ;;
+        esac
+    fi
+    
+    # 值验证 - 时间格式
+    if [ -n "$light_time" ]; then
+        if ! validate_time_format "$light_time"; then
+            echo "警告：轻量备份时间格式无效，已跳过"
+            log_warning "配置导入：轻量备份时间格式无效，已跳过"
+            light_time=""
+        fi
+    fi
+    if [ -n "$full_time" ]; then
+        if ! validate_time_format "$full_time"; then
+            echo "警告：全量备份时间格式无效，已跳过"
+            log_warning "配置导入：全量备份时间格式无效，已跳过"
+            full_time=""
+        fi
+    fi
+    
+    # 值验证 - 备份周期
+    if [ -n "$light_schedule" ]; then
+        case "$light_schedule" in
+            daily|weekly|monthly) ;;
+            *)
+                echo "警告：轻量备份周期无效，已跳过"
+                log_warning "配置导入：轻量备份周期无效，已跳过"
+                light_schedule=""
+                ;;
+        esac
+    fi
+    if [ -n "$full_schedule" ]; then
+        case "$full_schedule" in
+            daily|weekly|monthly) ;;
+            *)
+                echo "警告：全量备份周期无效，已跳过"
+                log_warning "配置导入：全量备份周期无效，已跳过"
+                full_schedule=""
+                ;;
+        esac
+    fi
+    
+    # 应用配置 - 只在值非空且有效时设置
     [ -n "$webdav_url" ] && uci set jianguoyun-backup.global.webdav_url="$webdav_url"
     [ -n "$username" ] && uci set jianguoyun-backup.global.username="$username"
     [ -n "$remote_root" ] && uci set jianguoyun-backup.global.remote_root="$remote_root"
@@ -1930,7 +2017,6 @@ import_config() {
     log_audit "import_config" "success" "配置已导入"
     return 0
 }
-
 # ==================== 日志管理 ====================
 
 # 清空日志
