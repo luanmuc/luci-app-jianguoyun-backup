@@ -56,6 +56,9 @@ curl_error_msg() {
 
 # 包管理器（自动检测）
 PKG_MANAGER=""
+# 配置版本号（用于配置迁移）
+CONFIG_VERSION=1
+
 DEFAULT_MAX_LOCAL_BACKUPS=5
 DEFAULT_MAX_REMOTE_BACKUPS=10
 
@@ -423,6 +426,7 @@ check_disk_space() {
     
     if [ "$available_bytes" -lt "$required_bytes" ]; then
         log_error "磁盘空间不足！剩余: $((available_space / 1024)) MB，需要: $((required_bytes / 1024 / 1024)) MB"
+        log_error "建议：清理 /tmp 目录或删除旧的备份文件释放空间"
         return 1
     fi
     
@@ -506,6 +510,7 @@ cleanup_temp_files() {
     rm -rf "$BACKUP_DIR"
     rm -rf "$RESTORE_DIR"
     rm -rf "$SNAPSHOT_DIR"
+    rm -rf "$TEMP_WORK_DIR"
     rm -f "/tmp/.webdav_test_$$"
     update_status "idle" "0" "空闲"
     release_lock
@@ -571,6 +576,29 @@ read_config() {
     BACKUP_STORAGE=$(uci -q get jianguoyun-backup.global.backup_storage)
     KEEP_LOCAL=$(uci -q get jianguoyun-backup.global.keep_local_backup)
     
+    # 读取配置版本号
+    local config_ver=$(uci -q get jianguoyun-backup.global.config_version)
+    if [ -z "$config_ver" ]; then
+        # 旧版本配置，设置版本号
+        uci set jianguoyun-backup.global.config_version="$CONFIG_VERSION"
+        uci commit jianguoyun-backup
+        log_info "配置版本已初始化: $CONFIG_VERSION"
+    elif [ "$config_ver" -lt "$CONFIG_VERSION" ]; then
+        # 需要迁移配置
+        log_info "检测到旧版本配置 ($config_ver)，正在迁移到版本 $CONFIG_VERSION..."
+        # 预留迁移逻辑
+        # case "$config_ver" in
+        #     1)
+        #         # 从版本1迁移到版本2
+        #         ...
+        #         config_ver=2
+        #         ;;
+        # esac
+        uci set jianguoyun-backup.global.config_version="$CONFIG_VERSION"
+        uci commit jianguoyun-backup
+        log_info "配置迁移完成"
+    fi
+    
     # 解密密码
     WEBDAV_PASS=$(decrypt_password "$WEBDAV_PASS_ENC")
     
@@ -608,6 +636,12 @@ read_config() {
     [ -z "$MAX_LOCAL_BACKUPS" ] && MAX_LOCAL_BACKUPS="$DEFAULT_MAX_LOCAL_BACKUPS"
     [ -z "$BACKUP_STORAGE" ] && BACKUP_STORAGE="tmp"
     [ -z "$KEEP_LOCAL" ] && KEEP_LOCAL="0"
+    
+    # 验证远程根目录，防止路径遍历
+    if echo "$REMOTE_ROOT" | grep -q '\.\.'; then
+        log_warning "远程根目录包含非法字符，使用默认值"
+        REMOTE_ROOT="OpenWrt_Backup"
+    fi
     [ -z "$LIGHT_SCHEDULE" ] && LIGHT_SCHEDULE="daily"
     [ -z "$LIGHT_TIME" ] && LIGHT_TIME="03:00"
     [ -z "$LIGHT_DAY" ] && LIGHT_DAY="0"
@@ -677,6 +711,7 @@ webdav_mkdir() {
                 ;;
             401)
                 log_error "认证失败，请检查账号密码"
+                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
                 return 1
                 ;;
             *)
@@ -827,6 +862,7 @@ webdav_download() {
                 ;;
             401)
                 log_error "认证失败，请检查账号密码"
+                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
                 return 1
                 ;;
             404)
@@ -896,6 +932,7 @@ webdav_list() {
                 ;;
             401)
                 log_error "认证失败，请检查账号密码"
+                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
                 return 1
                 ;;
             404)
@@ -935,6 +972,18 @@ webdav_delete() {
         return 1
     fi
     
+    # 验证文件名（最后一部分）
+    local file_name=$(basename "$remote_path")
+    if [ -n "$file_name" ] && [ "$file_name" != "." ] && [ "$file_name" != ".." ]; then
+        if ! validate_filename "$file_name" 2>/dev/null; then
+            # 如果不是纯文件名（可能是目录），只检查路径遍历
+            if echo "$file_name" | grep -q '\.\.'; then
+                log_error "webdav_delete: 文件名包含非法字符: $file_name"
+                return 1
+            fi
+        fi
+    fi
+    
     local url="${WEBDAV_URL%/}/${remote_path}"
     
     log_info "删除远端文件: $remote_path"
@@ -954,6 +1003,7 @@ webdav_delete() {
                 ;;
             401)
                 log_error "认证失败，请检查账号密码"
+                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
                 return 1
                 ;;
             *)
@@ -1966,12 +2016,58 @@ import_config() {
         return 1
     fi
     
+    # 验证文件名安全性
+    local file_basename=$(basename "$config_file")
+    if ! validate_filename "$file_basename"; then
+        echo "错误：配置文件名包含非法字符"
+        log_error "配置导入失败：文件名包含非法字符"
+        return 1
+    fi
+    
     log_info "导入配置文件: $config_file"
     
-    # 简单验证 JSON 格式
+    # 备份当前配置（导入失败可恢复）
+    local backup_file="/etc/jianguoyun-backup/config_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    if [ -f "$CONFIG_FILE" ]; then
+        tar -czf "$backup_file" -C /etc/config jianguoyun-backup 2>/dev/null
+        if [ $? -eq 0 ]; then
+            log_info "已备份当前配置到: $(basename "$backup_file")"
+        else
+            log_warning "配置备份失败，继续导入"
+        fi
+    fi
+    
+    # 验证 JSON 格式
     if ! head -1 "$config_file" | grep -q '^{'; then
-        echo "错误：配置文件格式不正确"
-        log_error "配置导入失败：文件格式不是有效的JSON"
+        echo "错误：配置文件格式不正确（缺少开头 {）"
+        log_error "配置导入失败：文件格式不是有效的JSON（缺少开头 {）"
+        return 1
+    fi
+    
+    # 检查是否以 } 结尾
+    if ! tail -1 "$config_file" | grep -q '}$'; then
+        echo "错误：配置文件格式不正确（缺少结尾 }）"
+        log_error "配置导入失败：文件格式不是有效的JSON（缺少结尾 }）"
+        return 1
+    fi
+    
+    # 检查文件大小，防止空文件或超大文件
+    local file_size=$(wc -c < "$config_file")
+    if [ "$file_size" -lt 10 ]; then
+        echo "错误：配置文件内容过少"
+        log_error "配置导入失败：文件内容过少（${file_size}字节）"
+        return 1
+    fi
+    if [ "$file_size" -gt 102400 ]; then
+        echo "错误：配置文件过大"
+        log_error "配置导入失败：文件过大（${file_size}字节）"
+        return 1
+    fi
+    
+    # 检查关键配置项是否存在
+    if ! grep -q '"webdav_url"' "$config_file"; then
+        echo "错误：配置文件缺少 webdav_url 配置项"
+        log_error "配置导入失败：缺少 webdav_url 配置项"
         return 1
     fi
     
