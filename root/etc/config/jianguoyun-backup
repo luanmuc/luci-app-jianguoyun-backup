@@ -10,6 +10,7 @@ config global 'global'
 	option max_local_backups '5'
 	option backup_storage 'tmp'
 	option keep_local_backup '0'
+	option config_version '1'
 
 config light_backup 'light_backup'
 	option enabled '0'
