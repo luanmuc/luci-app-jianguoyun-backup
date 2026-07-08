@@ -392,6 +392,71 @@
         justify-content: center;
     }
 }
+
+/* 快速恢复分区 */
+.quick-restore-section {
+    margin-bottom: 16px;
+}
+
+.section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1f2937;
+    margin-bottom: 12px;
+    padding-left: 4px;
+}
+
+/* 高级选项 */
+.advanced-section {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 12px;
+    margin-top: 8px;
+}
+
+.advanced-toggle {
+    cursor: pointer;
+    font-size: 13px;
+    color: #6b7280;
+    padding: 8px 4px;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+.advanced-toggle:hover {
+    color: #3b82f6;
+}
+
+.advanced-content {
+    padding: 8px 4px;
+}
+
+.advanced-item {
+    margin-bottom: 10px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #374151;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.advanced-hint {
+    font-size: 12px;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-top: 8px;
+}
 </style>
 
 <div class="restore-container">
@@ -454,25 +519,129 @@
 
         <!-- 轻量备份恢复选项 -->
         <div id="lightOptions">
-            <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only">
-                <div class="restore-option-title">仅恢复系统配置</div>
-                <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+            <!-- 快速恢复 -->
+            <div class="quick-restore-section">
+                <div class="section-title">⚡ 快速恢复</div>
+                <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only">
+                    <div class="restore-option-title">仅恢复系统配置</div>
+                    <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+                </div>
+                <div class="restore-option-item" onclick="selectRestoreMode('plugin_config_only')" id="mode_plugin_config_only">
+                    <div class="restore-option-title">仅恢复插件配置</div>
+                    <div class="restore-option-desc">只恢复所有插件的配置和数据，不改动系统设置</div>
+                </div>
+                <div class="restore-option-item selected" onclick="selectRestoreMode('system_plugins')" id="mode_system_plugins">
+                    <div class="restore-option-title">✨ 完整恢复（推荐）</div>
+                    <div class="restore-option-desc">恢复系统配置和所有插件配置，并根据清单自动联网重装缺失的插件</div>
+                </div>
+                <div class="restore-option-item" onclick="selectRestoreMode('reinstall_only')" id="mode_reinstall_only">
+                    <div class="restore-option-title">仅重装插件</div>
+                    <div class="restore-option-desc">只根据清单重新安装插件，不恢复任何配置</div>
+                </div>
             </div>
-            <div class="restore-option-item" onclick="selectRestoreMode('system_plugins')" id="mode_system_plugins">
-                <div class="restore-option-title">完整恢复（系统+插件配置+重装插件）</div>
-                <div class="restore-option-desc">恢复系统配置和所有插件配置，并根据清单自动联网重装缺失的插件</div>
+            
+            <!-- 高级选项（可折叠） -->
+            <div class="advanced-section">
+                <div class="advanced-toggle" onclick="toggleAdvanced()">
+                    <span id="advancedIcon">▶</span> 高级选项（自定义恢复）
+                </div>
+                <div class="advanced-content" id="advancedContent" style="display: none;">
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optSnapshot" checked>
+                            <span>恢复前创建快照（推荐）</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optSystem" checked onchange="updateCustomOptions()">
+                            <span>恢复系统配置</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optPluginConfig" checked onchange="updateCustomOptions()">
+                            <span>恢复插件配置</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optPluginData" checked onchange="updateCustomOptions()">
+                            <span>恢复插件数据目录</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optReinstall" onchange="updateCustomOptions()">
+                            <span>自动重装缺失插件</span>
+                        </label>
+                    </div>
+                    <div class="advanced-hint">
+                        💡 勾选以上选项后，将使用"自定义恢复"模式进行恢复
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- 全量备份恢复选项 -->
         <div id="fullOptions" style="display: none;">
-            <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only_full">
-                <div class="restore-option-title">仅恢复系统配置</div>
-                <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+            <!-- 快速恢复 -->
+            <div class="quick-restore-section">
+                <div class="section-title">⚡ 快速恢复</div>
+                <div class="restore-option-item" onclick="selectRestoreMode('system_only')" id="mode_system_only_full">
+                    <div class="restore-option-title">仅恢复系统配置</div>
+                    <div class="restore-option-desc">只恢复系统网络、防火墙等基础设置，不涉及插件</div>
+                </div>
+                <div class="restore-option-item" onclick="selectRestoreMode('plugin_config_only')" id="mode_plugin_config_only_full">
+                    <div class="restore-option-title">仅恢复插件配置</div>
+                    <div class="restore-option-desc">只恢复所有插件的配置和数据，不改动系统设置</div>
+                </div>
+                <div class="restore-option-item selected" onclick="selectRestoreMode('full_offline')" id="mode_full_offline">
+                    <div class="restore-option-title">✨ 离线完整恢复（推荐）</div>
+                    <div class="restore-option-desc">无需联网，离线恢复系统配置、插件程序本体和全部插件设置，整机完整还原</div>
+                </div>
             </div>
-            <div class="restore-option-item" onclick="selectRestoreMode('full_offline')" id="mode_full_offline">
-                <div class="restore-option-title">离线完整恢复（系统+插件程序+配置）</div>
-                <div class="restore-option-desc">无需联网，离线恢复系统配置、插件程序本体和全部插件设置，整机完整还原</div>
+            
+            <!-- 高级选项（可折叠） -->
+            <div class="advanced-section">
+                <div class="advanced-toggle" onclick="toggleAdvanced()">
+                    <span id="advancedIconFull">▶</span> 高级选项（自定义恢复）
+                </div>
+                <div class="advanced-content" id="advancedContentFull" style="display: none;">
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optSnapshotFull" checked>
+                            <span>恢复前创建快照（推荐）</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optSystemFull" checked onchange="updateCustomOptions()">
+                            <span>恢复系统配置</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optPluginConfigFull" checked onchange="updateCustomOptions()">
+                            <span>恢复插件配置</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optPluginDataFull" checked onchange="updateCustomOptions()">
+                            <span>恢复插件数据目录</span>
+                        </label>
+                    </div>
+                    <div class="advanced-item">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="optReinstallFull" onchange="updateCustomOptions()">
+                            <span>自动重装缺失插件（需联网）</span>
+                        </label>
+                    </div>
+                    <div class="advanced-hint">
+                        💡 勾选以上选项后，将使用"自定义恢复"模式进行恢复
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -723,15 +892,25 @@ function confirmRestore() {
         }
     };
     
-    xhr.send('type=' + encodeURIComponent(currentTab) + '&filename=' + encodeURIComponent(selectedFile) + '&mode=' + encodeURIComponent(selectedMode));
+    var params = 'type=' + encodeURIComponent(currentTab) + '&filename=' + encodeURIComponent(selectedFile) + '&mode=' + encodeURIComponent(selectedMode);
+    
+    // 如果是 custom 模式，添加 options 参数
+    if (selectedMode === 'custom') {
+        params += '&options=' + encodeURIComponent(buildCustomOptions());
+    }
+    
+    xhr.send(params);
 }
 
 // 获取模式文本
 function getModeText(mode) {
     var modes = {
         'system_only': '仅恢复系统配置',
+        'plugin_config_only': '仅恢复插件配置',
         'system_plugins': '完整恢复（系统+插件配置+重装插件）',
-        'full_offline': '离线完整恢复（系统+插件程序+配置）'
+        'reinstall_only': '仅重装插件',
+        'full_offline': '离线完整恢复（系统+插件程序+配置）',
+        'custom': '自定义恢复'
     };
     return modes[mode] || mode;
 }
@@ -746,6 +925,52 @@ function escapeHtml(text) {
     var div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// 切换高级选项显示
+function toggleAdvanced() {
+    var contentId = currentTab === 'light' ? 'advancedContent' : 'advancedContentFull';
+    var iconId = currentTab === 'light' ? 'advancedIcon' : 'advancedIconFull';
+    var content = document.getElementById(contentId);
+    var icon = document.getElementById(iconId);
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+// 更新自定义选项
+function updateCustomOptions() {
+    var suffix = currentTab === 'light' ? '' : 'Full';
+    
+    var optSystem = document.getElementById('optSystem' + suffix).checked;
+    var optPluginConfig = document.getElementById('optPluginConfig' + suffix).checked;
+    var optPluginData = document.getElementById('optPluginData' + suffix).checked;
+    var optReinstall = document.getElementById('optReinstall' + suffix).checked;
+    
+    // 如果用户勾选了高级选项，就切换到 custom 模式
+    document.querySelectorAll('.restore-option-item').forEach(function(el) {
+        el.classList.remove('selected');
+    });
+    
+    selectedMode = 'custom';
+    document.getElementById('btnConfirmRestore').disabled = false;
+}
+
+// 生成自定义恢复 options 字符串
+function buildCustomOptions() {
+    var suffix = currentTab === 'light' ? '' : 'Full';
+    
+    var optSystem = document.getElementById('optSystem' + suffix).checked ? 1 : 0;
+    var optPluginConfig = document.getElementById('optPluginConfig' + suffix).checked ? 'all' : 'none';
+    var optPluginData = document.getElementById('optPluginData' + suffix).checked ? 'all' : 'none';
+    var optReinstall = document.getElementById('optReinstall' + suffix).checked ? 1 : 0;
+    
+    return 'system=' + optSystem + ',config=' + optPluginConfig + ',appdata=' + optPluginData + ',reinstall=' + optReinstall;
 }
 
 // 页面加载完成后加载备份列表
