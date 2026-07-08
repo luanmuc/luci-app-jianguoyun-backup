@@ -2027,6 +2027,7 @@ offline_install_plugins() {
 # 执行恢复操作
 # 列出备份包中的插件（命令入口）
 list_plugins_cmd() {
+    read_config
     local type="$1"
     local filename="$2"
     local list_type="${3:-all}"
@@ -2353,6 +2354,7 @@ export_config() {
 {
   "webdav_url": "$WEBDAV_URL",
   "username": "$WEBDAV_USER",
+  "password": "$WEBDAV_PASS_ENC",
   "remote_root": "$REMOTE_ROOT",
   "max_remote_backups": "$MAX_REMOTE_BACKUPS",
   "max_local_backups": "$MAX_LOCAL_BACKUPS",
