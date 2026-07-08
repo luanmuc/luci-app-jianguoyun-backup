@@ -262,11 +262,10 @@ end
 function action_list_backup_plugins()
     local http = require "luci.http"
     local sys = require "luci.sys"
-    local nixio = require "nixio"
     
     local restore_type = http.formvalue("type") or "light"
     local filename = http.formvalue("filename") or ""
-    local list_type = http.formvalue("list_type") or "configs"  -- configs, appdata, all
+    local list_type = http.formvalue("list_type") or "all"
     
     if filename == "" then
         http.prepare_content("application/json")
@@ -290,35 +289,68 @@ function action_list_backup_plugins()
         return
     end
     
-    -- 验证文件名
+    -- 验证文件名，防止注入
     if not filename:match("^[%w%-_%.]+$") then
         http.prepare_content("application/json")
         http.write('{"error": "文件名包含非法字符"}')
         return
     end
     
-    -- 创建临时目录
-    local tmpdir = "/tmp/jianguoyun_list_" .. os.time()
-    sys.exec("mkdir -p " .. tmpdir)
+    -- 调用 Shell 脚本的 list_plugins 命令
+    local cmd = string.format("/usr/bin/jianguoyun-backup.sh list_plugins %q %q %q 2>/dev/null",
+        restore_type, filename, list_type)
     
-    -- 下载备份文件（这里简化，直接调用脚本的下载功能，或者用 webdav 下载）
-    -- 为了简化，我们直接调用 Shell 脚本的 list_backup_plugins 功能
-    -- 但需要先下载和解压备份文件
+    local output = sys.exec(cmd)
     
-    -- 这里用一个简化方案：调用 Shell 脚本的一个新命令
-    -- 或者，我们直接在 Lua 中实现下载和解压
+    -- 解析输出（按行分割）
+    local configs = {}
+    local appdata = {}
+    local current_section = ""
     
-    -- 为了快速实现，我们先返回一个示例格式，说明接口已就绪
-    -- 实际实现需要下载文件、解压、然后列出
+    -- 用换行符分割
+    local lines = {}
+    for line in string.gmatch(output, "[^\n]+") do
+        -- 去掉回车符
+        line = line:gsub("\r", "")
+        -- trim
+        line = line:match("^%s*(.-)%s*$")
+        
+        if line == "" then
+            -- 空行跳过
+        elseif line == "=== 插件配置列表 ===" then
+            current_section = "configs"
+        elseif line == "=== 插件数据列表 ===" then
+            current_section = "appdata"
+        elseif line == "(无)" then
+            -- 空列表
+        else
+            if current_section == "configs" then
+                table.insert(configs, line)
+            elseif current_section == "appdata" then
+                table.insert(appdata, line)
+            end
+        end
+    end
     
-    -- 临时方案：直接返回空列表，前端会处理
-    -- TODO: 完整实现需要下载备份文件并解压
-    
+    -- 返回 JSON（手动拼接）
     http.prepare_content("application/json")
-    http.write('{"configs": [], "appdata": [], "note": "功能开发中"}')
     
-    -- 清理临时目录
-    sys.exec("rm -rf " .. tmpdir)
+    local json = "{"
+    json = json .. '"configs": ['
+    for i, name in ipairs(configs) do
+        if i > 1 then json = json .. "," end
+        json = json .. '"' .. name:gsub('"', '\\"') .. '"'
+    end
+    json = json .. '],'
+    json = json .. '"appdata": ['
+    for i, name in ipairs(appdata) do
+        if i > 1 then json = json .. "," end
+        json = json .. '"' .. name:gsub('"', '\\"') .. '"'
+    end
+    json = json .. ']'
+    json = json .. "}"
+    
+    http.write(json)
 end
 
 -- 列出本地备份
