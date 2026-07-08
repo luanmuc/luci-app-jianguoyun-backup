@@ -112,7 +112,7 @@ validate_backup_type() {
 validate_restore_mode() {
     local mode="$1"
     case "$mode" in
-        system_only|system_plugins|full_offline)
+        system_only|system_plugins|full_offline|plugin_config_only|reinstall_only|custom)
             return 0
             ;;
         *)
@@ -1633,15 +1633,63 @@ restore_plugin_config() {
     
     log_info "恢复插件配置"
     
+    restore_plugin_config_all "$backup_dir"
+    restore_plugin_appdata_all "$backup_dir"
+    
+    log_success "插件配置恢复完成"
+    return 0
+}
+
+# 恢复所有插件的UCI配置
+restore_plugin_config_all() {
+    local backup_dir="$1"
+    
+    log_info "恢复所有插件UCI配置"
+    
     if [ -d "$backup_dir/plugin_data/configs" ]; then
-        # 恢复UCI配置
         cp -a "$backup_dir/plugin_data/configs"/* /etc/config/ 2>/dev/null
         uci commit 2>/dev/null
         log_info "UCI配置恢复完成"
+        return 0
+    else
+        log_warning "备份包中没有插件配置"
+        return 1
+    fi
+}
+
+# 恢复单个插件的UCI配置
+restore_single_plugin_config() {
+    local backup_dir="$1"
+    local plugin_name="$2"
+    
+    # 验证插件名，防止路径遍历
+    if ! validate_filename "$plugin_name"; then
+        log_error "无效的插件名: $plugin_name"
+        return 1
     fi
     
-    # 恢复插件数据
+    log_info "恢复插件配置: $plugin_name"
+    
+    local config_file="$backup_dir/plugin_data/configs/$plugin_name"
+    if [ -f "$config_file" ]; then
+        cp -a "$config_file" /etc/config/ 2>/dev/null
+        uci commit "$plugin_name" 2>/dev/null
+        log_info "插件配置恢复完成: $plugin_name"
+        return 0
+    else
+        log_error "备份包中没有插件配置: $plugin_name"
+        return 1
+    fi
+}
+
+# 恢复所有插件的数据目录
+restore_plugin_appdata_all() {
+    local backup_dir="$1"
+    
+    log_info "恢复所有插件数据目录"
+    
     if [ -d "$backup_dir/plugin_data/app_data" ]; then
+        local count=0
         for app_dir in "$backup_dir/plugin_data/app_data"/*; do
             if [ -d "$app_dir" ]; then
                 local app_name=$(basename "$app_dir")
@@ -1649,12 +1697,252 @@ restore_plugin_config() {
                 mkdir -p "$target_dir"
                 cp -a "$app_dir"/* "$target_dir/" 2>/dev/null
                 log_info "恢复插件数据: $app_name"
+                count=$((count + 1))
             fi
         done
+        log_info "插件数据恢复完成，共 $count 个"
+        return 0
+    else
+        log_warning "备份包中没有插件数据目录"
+        return 1
+    fi
+}
+
+# 恢复单个插件的数据目录
+restore_single_plugin_appdata() {
+    local backup_dir="$1"
+    local plugin_name="$2"
+    
+    # 验证插件名，防止路径遍历
+    if ! validate_filename "$plugin_name"; then
+        log_error "无效的插件名: $plugin_name"
+        return 1
     fi
     
-    log_success "插件配置恢复完成"
+    log_info "恢复插件数据: $plugin_name"
+    
+    local app_dir="$backup_dir/plugin_data/app_data/$plugin_name"
+    if [ -d "$app_dir" ]; then
+        local target_dir="/etc/$plugin_name"
+        mkdir -p "$target_dir"
+        cp -a "$app_dir"/* "$target_dir/" 2>/dev/null
+        log_info "插件数据恢复完成: $plugin_name"
+        return 0
+    else
+        log_warning "备份包中没有插件数据: $plugin_name"
+        return 1
+    fi
+}
+
+# 仅重装插件（不恢复配置）
+reinstall_plugins_only() {
+    local backup_dir="$1"
+    
+    log_info "仅重装插件，不恢复配置"
+    
+    if [ ! -f "$backup_dir/plugin_data/plugin_list.txt" ]; then
+        log_error "插件清单文件不存在"
+        return 1
+    fi
+    
+    reinstall_plugins "$backup_dir"
     return 0
+}
+
+# 列出备份包中可恢复的插件
+list_backup_plugins() {
+    local backup_dir="$1"
+    local output_type="${2:-all}"  # configs, appdata, all
+    
+    log_info "列出备份包中的插件"
+    
+    local configs_dir="$backup_dir/plugin_data/configs"
+    local appdata_dir="$backup_dir/plugin_data/app_data"
+    
+    case "$output_type" in
+        configs)
+            if [ -d "$configs_dir" ]; then
+                ls -1 "$configs_dir" 2>/dev/null
+            fi
+            ;;
+        appdata)
+            if [ -d "$appdata_dir" ]; then
+                ls -1 "$appdata_dir" 2>/dev/null
+            fi
+            ;;
+        all)
+            echo "=== 插件配置列表 ==="
+            if [ -d "$configs_dir" ]; then
+                ls -1 "$configs_dir" 2>/dev/null
+            else
+                echo "(无)"
+            fi
+            echo ""
+            echo "=== 插件数据列表 ==="
+            if [ -d "$appdata_dir" ]; then
+                ls -1 "$appdata_dir" 2>/dev/null
+            else
+                echo "(无)"
+            fi
+            ;;
+    esac
+    
+    return 0
+}
+
+# 自定义恢复入口
+do_restore_custom() {
+    local backup_dir="$1"
+    local options="$2"  # 格式：system=1,config=all,appdata=none,reinstall=1
+                        # 或者：system=1,config=plugin1:plugin2,appdata=plugin1,reinstall=0
+    
+    log_info "执行自定义恢复"
+    
+    local success_count=0
+    local fail_count=0
+    local total_count=0
+    
+    # 解析选项（用 grep/cut 方式，避免子 shell 问题）
+    local opt_system=0
+    local opt_config="none"  # none, all, 或插件列表
+    local opt_appdata="none"  # none, all, 或插件列表
+    local opt_reinstall=0
+    
+    # 提取每个选项的值
+    local val_system=$(echo "$options" | tr ',' '
+' | grep "^system=" | cut -d'=' -f2)
+    local val_config=$(echo "$options" | tr ',' '
+' | grep "^config=" | cut -d'=' -f2)
+    local val_appdata=$(echo "$options" | tr ',' '
+' | grep "^appdata=" | cut -d'=' -f2)
+    local val_reinstall=$(echo "$options" | tr ',' '
+' | grep "^reinstall=" | cut -d'=' -f2)
+    
+    [ "$val_system" = "1" ] && opt_system=1
+    [ -n "$val_config" ] && opt_config="$val_config"
+    [ -n "$val_appdata" ] && opt_appdata="$val_appdata"
+    [ "$val_reinstall" = "1" ] && opt_reinstall=1
+    
+    log_info "恢复选项: system=$opt_system, config=$opt_config, appdata=$opt_appdata, reinstall=$opt_reinstall"
+    
+    # 1. 恢复系统配置
+    if [ "$opt_system" -eq 1 ]; then
+        total_count=$((total_count + 1))
+        if restore_system_config "$backup_dir"; then
+            success_count=$((success_count + 1))
+        else
+            fail_count=$((fail_count + 1))
+        fi
+    fi
+    
+    # 2. 恢复插件配置
+    if [ "$opt_config" != "none" ]; then
+        total_count=$((total_count + 1))
+        if [ "$opt_config" = "all" ]; then
+            if restore_plugin_config_all "$backup_dir"; then
+                success_count=$((success_count + 1))
+            else
+                fail_count=$((fail_count + 1))
+            fi
+        else
+            # 自定义插件列表（冒号分隔）
+            local plugins="$opt_config"
+            local plugins_success=0
+            local plugins_fail=0
+            local plugin_name
+            
+            # 用 for 循环遍历（插件名不含空格，安全）
+            local old_ifs="$IFS"
+            IFS=':'
+            for plugin_name in $plugins; do
+                IFS="$old_ifs"
+                [ -z "$plugin_name" ] && continue
+                # 验证插件名
+                if ! validate_filename "$plugin_name"; then
+                    log_error "跳过无效插件名: $plugin_name"
+                    plugins_fail=$((plugins_fail + 1))
+                    continue
+                fi
+                if restore_single_plugin_config "$backup_dir" "$plugin_name"; then
+                    plugins_success=$((plugins_success + 1))
+                else
+                    plugins_fail=$((plugins_fail + 1))
+                fi
+            done
+            IFS="$old_ifs"
+            
+            if [ "$plugins_success" -gt 0 ]; then
+                success_count=$((success_count + 1))
+            fi
+            if [ "$plugins_fail" -gt 0 ]; then
+                fail_count=$((fail_count + 1))
+            fi
+            log_info "插件配置恢复: 成功 $plugins_success，失败 $plugins_fail"
+        fi
+    fi
+    
+    # 3. 恢复插件数据
+    if [ "$opt_appdata" != "none" ]; then
+        total_count=$((total_count + 1))
+        if [ "$opt_appdata" = "all" ]; then
+            if restore_plugin_appdata_all "$backup_dir"; then
+                success_count=$((success_count + 1))
+            else
+                fail_count=$((fail_count + 1))
+            fi
+        else
+            # 自定义插件列表（冒号分隔）
+            local plugins="$opt_appdata"
+            local plugins_success=0
+            local plugins_fail=0
+            local plugin_name
+            
+            # 用 for 循环遍历（插件名不含空格，安全）
+            local old_ifs="$IFS"
+            IFS=':'
+            for plugin_name in $plugins; do
+                IFS="$old_ifs"
+                [ -z "$plugin_name" ] && continue
+                if ! validate_filename "$plugin_name"; then
+                    log_error "跳过无效插件名: $plugin_name"
+                    plugins_fail=$((plugins_fail + 1))
+                    continue
+                fi
+                if restore_single_plugin_appdata "$backup_dir" "$plugin_name"; then
+                    plugins_success=$((plugins_success + 1))
+                else
+                    plugins_fail=$((plugins_fail + 1))
+                fi
+            done
+            IFS="$old_ifs"
+            
+            if [ "$plugins_success" -gt 0 ]; then
+                success_count=$((success_count + 1))
+            fi
+            if [ "$plugins_fail" -gt 0 ]; then
+                fail_count=$((fail_count + 1))
+            fi
+            log_info "插件数据恢复: 成功 $plugins_success，失败 $plugins_fail"
+        fi
+    fi
+    
+    # 4. 重装插件
+    if [ "$opt_reinstall" -eq 1 ]; then
+        total_count=$((total_count + 1))
+        if reinstall_plugins "$backup_dir"; then
+            success_count=$((success_count + 1))
+        else
+            fail_count=$((fail_count + 1))
+        fi
+    fi
+    
+    log_info "自定义恢复完成: 总计 $total_count 项，成功 $success_count，失败 $fail_count"
+    
+    if [ "$fail_count" -eq 0 ]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # 根据插件清单重装插件
@@ -1737,6 +2025,74 @@ offline_install_plugins() {
 }
 
 # 执行恢复操作
+# 列出备份包中的插件（命令入口）
+list_plugins_cmd() {
+    local type="$1"
+    local filename="$2"
+    local list_type="${3:-all}"
+    
+    # 验证文件名
+    if ! validate_filename "$filename"; then
+        echo "错误：无效的文件名"
+        exit 1
+    fi
+    
+    # 验证类型
+    case "$type" in
+        light|full) ;;
+        *)
+            echo "错误：无效的备份类型"
+            exit 1
+            ;;
+    esac
+    
+    # 创建临时目录
+    local tmp_dir="/tmp/jianguoyun_list_$$"
+    mkdir -p "$tmp_dir"
+    
+    # 远程路径
+    local remote_path
+    if [ "$type" = "light" ]; then
+        remote_path="$REMOTE_ROOT/light/$filename"
+    else
+        remote_path="$REMOTE_ROOT/full/$filename"
+    fi
+    
+    # 下载备份文件
+    log_info "下载备份文件: $remote_path"
+    if ! webdav_download "$remote_path" "$tmp_dir/$filename"; then
+        log_error "下载备份文件失败"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    # 解压
+    log_info "解压备份文件"
+    if ! tar -xzf "$tmp_dir/$filename" -C "$tmp_dir" 2>/dev/null; then
+        log_error "解压失败"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    # 找到解压后的目录（备份包根目录）
+    local backup_dir
+    backup_dir=$(find "$tmp_dir" -maxdepth 1 -type d ! -name "$(basename "$tmp_dir")" | head -1)
+    
+    if [ -z "$backup_dir" ]; then
+        log_error "未找到备份目录"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    
+    # 列出插件
+    list_backup_plugins "$backup_dir" "$list_type"
+    
+    # 清理
+    rm -rf "$tmp_dir"
+    
+    return 0
+}
+
 do_restore() {
     local type="$1"
     local filename="$2"
@@ -1836,6 +2192,16 @@ do_restore() {
             # 仅恢复系统配置
             restore_system_config "$RESTORE_DIR"
             ;;
+        plugin_config_only)
+            # 仅恢复插件配置
+            update_status "running" "60" "恢复插件配置..."
+            restore_plugin_config "$RESTORE_DIR"
+            ;;
+        reinstall_only)
+            # 仅重装插件，不恢复配置
+            update_status "running" "60" "重装插件..."
+            reinstall_plugins_only "$RESTORE_DIR"
+            ;;
         system_plugins)
             # 恢复系统+插件配置，并重装插件
             update_status "running" "60" "恢复系统配置..."
@@ -1853,6 +2219,12 @@ do_restore() {
             restore_plugin_config "$RESTORE_DIR"
             update_status "running" "85" "离线安装插件..."
             offline_install_plugins "$RESTORE_DIR"
+            ;;
+        custom)
+            # 自定义恢复（第4个参数是 options）
+            local custom_options="${4:-system=1,config=all,appdata=all,reinstall=0}"
+            update_status "running" "60" "执行自定义恢复..."
+            do_restore_custom "$RESTORE_DIR" "$custom_options"
             ;;
         *)
             log_error "未知的恢复模式: $mode"
@@ -2273,6 +2645,13 @@ case "$1" in
     download)
         download_backup "$2" "$3"
         ;;
+    list_plugins)
+        if [ $# -lt 3 ]; then
+            echo "用法: $0 list_plugins <type> <filename> [list_type]"
+            exit 1
+        fi
+        list_plugins_cmd "$2" "$3" "${4:-all}"
+        ;;
     restore)
         acquire_lock || exit 1
         do_restore "$2" "$3" "$4"
@@ -2307,7 +2686,8 @@ case "$1" in
         echo "  full_backup       - 执行全量备份"
         echo "  list              - 列出云端备份文件"
         echo "  download          - 下载备份文件 (type filename)"
-        echo "  restore           - 恢复备份 (type filename mode)"
+        echo "  list_plugins      - 列出备份包中的插件 (type filename [list_type])"
+        echo "  restore           - 恢复备份 (type filename mode [options])"
         echo "                     mode: system_only | system_plugins | full_offline"
         echo "  setup_cron        - 设置定时任务"
         echo "  log               - 查看运行日志"
