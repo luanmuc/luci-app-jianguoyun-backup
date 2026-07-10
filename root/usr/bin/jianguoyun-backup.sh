@@ -29,6 +29,8 @@ STATUS_FILE="/var/run/jianguoyun-backup.status"
 MAX_LOG_LINES=1000
 MAX_LOG_SIZE=1048576  # 1MB
 MAX_AUDIT_LINES=500
+MAX_IMPORT_SIZE=102400  # 配置导入文件最大 100KB
+LOG_CHECK_INTERVAL=10   # 每写10条日志检查一次轮转
 
 # ==================== 统计变量 ====================
 BACKUP_START_TIME=""
@@ -2381,16 +2383,18 @@ EOF
     log_audit "export_config" "success" "配置已导出"
 }
 
-# 导入配置
-import_config() {
+# 验证导入文件的基本合法性
+_validate_import_file() {
     local config_file="$1"
     
+    # 文件存在性
     if [ ! -f "$config_file" ]; then
         echo "错误：配置文件不存在"
+        log_error "配置导入失败：文件不存在"
         return 1
     fi
     
-    # 验证文件名安全性
+    # 文件名安全性
     local file_basename=$(basename "$config_file")
     if ! validate_filename "$file_basename"; then
         echo "错误：配置文件名包含非法字符"
@@ -2398,185 +2402,230 @@ import_config() {
         return 1
     fi
     
-    log_info "导入配置文件: $config_file"
-    
-    # 备份当前配置（导入失败可恢复）
-    local backup_file="/etc/jianguoyun-backup/config_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
-    if [ -f "$CONFIG_FILE" ]; then
-        tar -czf "$backup_file" -C /etc/config jianguoyun-backup 2>/dev/null
-        if [ $? -eq 0 ]; then
-            log_info "已备份当前配置到: $(basename "$backup_file")"
-        else
-            log_warning "配置备份失败，继续导入"
-        fi
-    fi
-    
-    # 验证 JSON 格式
+    # JSON 格式：开头 {
     if ! head -1 "$config_file" | grep -q '^{'; then
         echo "错误：配置文件格式不正确（缺少开头 {）"
-        log_error "配置导入失败：文件格式不是有效的JSON（缺少开头 {）"
+        log_error "配置导入失败：文件格式不是有效的JSON"
         return 1
     fi
     
-    # 检查是否以 } 结尾
+    # JSON 格式：结尾 }
     if ! tail -1 "$config_file" | grep -q '}$'; then
         echo "错误：配置文件格式不正确（缺少结尾 }）"
-        log_error "配置导入失败：文件格式不是有效的JSON（缺少结尾 }）"
+        log_error "配置导入失败：文件格式不是有效的JSON"
         return 1
     fi
     
-    # 检查文件大小，防止空文件或超大文件
+    # 文件大小检查（10字节 - 100KB）
     local file_size=$(wc -c < "$config_file")
     if [ "$file_size" -lt 10 ]; then
         echo "错误：配置文件内容过少"
         log_error "配置导入失败：文件内容过少（${file_size}字节）"
         return 1
     fi
-    if [ "$file_size" -gt 102400 ]; then
+    if [ "$file_size" -gt "$MAX_IMPORT_SIZE" ]; then
         echo "错误：配置文件过大"
         log_error "配置导入失败：文件过大（${file_size}字节）"
         return 1
     fi
     
-    # 检查关键配置项是否存在
+    # 关键配置项检查
     if ! grep -q '"webdav_url"' "$config_file"; then
         echo "错误：配置文件缺少 webdav_url 配置项"
         log_error "配置导入失败：缺少 webdav_url 配置项"
         return 1
     fi
     
-    # 解析基础配置
-    local webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local username=$(grep '"username"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
-    local max_local=$(grep '"max_local_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
-    local backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    return 0
+}
+
+# 验证解析后的配置值（通过全局变量传递）
+_validate_import_values() {
+    local has_warning=0
     
-    # 提取 light_backup 对象内容（从 { 到 }）
-    local light_section=$(sed -n '/"light_backup": {/,/},/p' "$config_file" | sed '1d;$d')
-    
-    # 提取 full_backup 对象内容
-    local full_section=$(sed -n '/"full_backup": {/,/},/p' "$config_file" | sed '1d;$d')
-    
-    # 如果提取失败，回退到 grep -A20 的方式
-    if [ -z "$light_section" ]; then
-        light_section=$(grep -A20 '"light_backup"' "$config_file")
-    fi
-    if [ -z "$full_section" ]; then
-        full_section=$(grep -A20 '"full_backup"' "$config_file")
-    fi
-    
-    # 解析轻量备份配置
-    local light_enabled=$(echo "$light_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_schedule=$(echo "$light_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_time=$(echo "$light_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_day=$(echo "$light_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local light_day_month=$(echo "$light_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    
-    # 解析全量备份配置
-    local full_enabled=$(echo "$full_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_schedule=$(echo "$full_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_time=$(echo "$full_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_day=$(echo "$full_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    local full_day_month=$(echo "$full_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
-    
-    # 值验证 - WebDAV地址格式
-    if [ -n "$webdav_url" ]; then
-        if ! echo "$webdav_url" | grep -qE '^https?://'; then
+    # WebDAV地址格式
+    if [ -n "$_imp_webdav_url" ]; then
+        if ! echo "$_imp_webdav_url" | grep -qE '^https?://'; then
             echo "警告：WebDAV地址格式不正确，已跳过"
             log_warning "配置导入：WebDAV地址格式不正确，已跳过"
-            webdav_url=""
+            _imp_webdav_url=""
+            has_warning=1
         fi
     fi
     
-    # 值验证 - 数字范围
-    if [ -n "$max_remote" ]; then
-        if ! echo "$max_remote" | grep -qE '^[0-9]+$' || [ "$max_remote" -lt 1 ] || [ "$max_remote" -gt 100 ]; then
+    # 数字范围：云端保留数量
+    if [ -n "$_imp_max_remote" ]; then
+        if ! echo "$_imp_max_remote" | grep -qE '^[0-9]+$' \
+           || [ "$_imp_max_remote" -lt 1 ] \
+           || [ "$_imp_max_remote" -gt 100 ]; then
             echo "警告：云端备份保留数量无效，已跳过"
             log_warning "配置导入：云端备份保留数量无效，已跳过"
-            max_remote=""
+            _imp_max_remote=""
+            has_warning=1
         fi
     fi
     
-    # 值验证 - 备份存储位置
-    if [ -n "$backup_storage" ]; then
-        case "$backup_storage" in
+    # 数字范围：本地保留数量
+    if [ -n "$_imp_max_local" ]; then
+        if ! echo "$_imp_max_local" | grep -qE '^[0-9]+$' \
+           || [ "$_imp_max_local" -lt 1 ] \
+           || [ "$_imp_max_local" -gt 100 ]; then
+            echo "警告：本地备份保留数量无效，已跳过"
+            log_warning "配置导入：本地备份保留数量无效，已跳过"
+            _imp_max_local=""
+            has_warning=1
+        fi
+    fi
+    
+    # 备份存储位置
+    if [ -n "$_imp_backup_storage" ]; then
+        case "$_imp_backup_storage" in
             tmp|permanent) ;;
             *)
                 echo "警告：备份存储位置无效，已跳过"
                 log_warning "配置导入：备份存储位置无效，已跳过"
-                backup_storage=""
+                _imp_backup_storage=""
+                has_warning=1
                 ;;
         esac
     fi
     
-    # 值验证 - 时间格式
-    if [ -n "$light_time" ]; then
-        if ! validate_time_format "$light_time"; then
+    # 时间格式验证
+    if [ -n "$_imp_light_time" ]; then
+        if ! validate_time_format "$_imp_light_time"; then
             echo "警告：轻量备份时间格式无效，已跳过"
             log_warning "配置导入：轻量备份时间格式无效，已跳过"
-            light_time=""
+            _imp_light_time=""
+            has_warning=1
         fi
     fi
-    if [ -n "$full_time" ]; then
-        if ! validate_time_format "$full_time"; then
+    if [ -n "$_imp_full_time" ]; then
+        if ! validate_time_format "$_imp_full_time"; then
             echo "警告：全量备份时间格式无效，已跳过"
             log_warning "配置导入：全量备份时间格式无效，已跳过"
-            full_time=""
+            _imp_full_time=""
+            has_warning=1
         fi
     fi
     
-    # 值验证 - 备份周期
-    if [ -n "$light_schedule" ]; then
-        case "$light_schedule" in
+    # 备份周期验证
+    if [ -n "$_imp_light_schedule" ]; then
+        case "$_imp_light_schedule" in
             daily|weekly|monthly) ;;
             *)
                 echo "警告：轻量备份周期无效，已跳过"
                 log_warning "配置导入：轻量备份周期无效，已跳过"
-                light_schedule=""
+                _imp_light_schedule=""
+                has_warning=1
                 ;;
         esac
     fi
-    if [ -n "$full_schedule" ]; then
-        case "$full_schedule" in
+    if [ -n "$_imp_full_schedule" ]; then
+        case "$_imp_full_schedule" in
             daily|weekly|monthly) ;;
             *)
                 echo "警告：全量备份周期无效，已跳过"
                 log_warning "配置导入：全量备份周期无效，已跳过"
-                full_schedule=""
+                _imp_full_schedule=""
+                has_warning=1
                 ;;
         esac
     fi
     
-    # 应用配置 - 只在值非空且有效时设置
-    [ -n "$webdav_url" ] && uci set jianguoyun-backup.global.webdav_url="$webdav_url"
-    [ -n "$username" ] && uci set jianguoyun-backup.global.username="$username"
-    [ -n "$remote_root" ] && uci set jianguoyun-backup.global.remote_root="$remote_root"
-    [ -n "$max_remote" ] && uci set jianguoyun-backup.global.max_remote_backups="$max_remote"
-    [ -n "$max_local" ] && uci set jianguoyun-backup.global.max_local_backups="$max_local"
-    [ -n "$backup_storage" ] && uci set jianguoyun-backup.global.backup_storage="$backup_storage"
-    [ -n "$keep_local" ] && uci set jianguoyun-backup.global.keep_local_backup="$keep_local"
+    return $has_warning
+}
+
+# 应用验证后的配置到 UCI（通过全局变量传递）
+_apply_imported_config() {
+    # 全局配置
+    [ -n "$_imp_webdav_url" ] && uci set jianguoyun-backup.global.webdav_url="$_imp_webdav_url"
+    [ -n "$_imp_username" ] && uci set jianguoyun-backup.global.username="$_imp_username"
+    [ -n "$_imp_remote_root" ] && uci set jianguoyun-backup.global.remote_root="$_imp_remote_root"
+    [ -n "$_imp_max_remote" ] && uci set jianguoyun-backup.global.max_remote_backups="$_imp_max_remote"
+    [ -n "$_imp_max_local" ] && uci set jianguoyun-backup.global.max_local_backups="$_imp_max_local"
+    [ -n "$_imp_backup_storage" ] && uci set jianguoyun-backup.global.backup_storage="$_imp_backup_storage"
+    [ -n "$_imp_keep_local" ] && uci set jianguoyun-backup.global.keep_local_backup="$_imp_keep_local"
     
     # 轻量备份配置
-    [ -n "$light_enabled" ] && uci set jianguoyun-backup.light_backup.enabled="$light_enabled"
-    [ -n "$light_schedule" ] && uci set jianguoyun-backup.light_backup.schedule="$light_schedule"
-    [ -n "$light_time" ] && uci set jianguoyun-backup.light_backup.time="$light_time"
-    [ -n "$light_day" ] && uci set jianguoyun-backup.light_backup.day="$light_day"
-    [ -n "$light_day_month" ] && uci set jianguoyun-backup.light_backup.day_month="$light_day_month"
+    [ -n "$_imp_light_enabled" ] && uci set jianguoyun-backup.light_backup.enabled="$_imp_light_enabled"
+    [ -n "$_imp_light_schedule" ] && uci set jianguoyun-backup.light_backup.schedule="$_imp_light_schedule"
+    [ -n "$_imp_light_time" ] && uci set jianguoyun-backup.light_backup.time="$_imp_light_time"
+    [ -n "$_imp_light_day" ] && uci set jianguoyun-backup.light_backup.day="$_imp_light_day"
+    [ -n "$_imp_light_day_month" ] && uci set jianguoyun-backup.light_backup.day_month="$_imp_light_day_month"
     
     # 全量备份配置
-    [ -n "$full_enabled" ] && uci set jianguoyun-backup.full_backup.enabled="$full_enabled"
-    [ -n "$full_schedule" ] && uci set jianguoyun-backup.full_backup.schedule="$full_schedule"
-    [ -n "$full_time" ] && uci set jianguoyun-backup.full_backup.time="$full_time"
-    [ -n "$full_day" ] && uci set jianguoyun-backup.full_backup.day="$full_day"
-    [ -n "$full_day_month" ] && uci set jianguoyun-backup.full_backup.day_month="$full_day_month"
+    [ -n "$_imp_full_enabled" ] && uci set jianguoyun-backup.full_backup.enabled="$_imp_full_enabled"
+    [ -n "$_imp_full_schedule" ] && uci set jianguoyun-backup.full_backup.schedule="$_imp_full_schedule"
+    [ -n "$_imp_full_time" ] && uci set jianguoyun-backup.full_backup.time="$_imp_full_time"
+    [ -n "$_imp_full_day" ] && uci set jianguoyun-backup.full_backup.day="$_imp_full_day"
+    [ -n "$_imp_full_day_month" ] && uci set jianguoyun-backup.full_backup.day_month="$_imp_full_day_month"
     
     uci commit jianguoyun-backup
+}
+
+# 导入配置
+import_config() {
+    local config_file="$1"
     
-    # 重新设置定时任务
+    log_info "导入配置文件: $config_file"
+    
+    # 步骤1：验证文件基本合法性
+    _validate_import_file "$config_file" || return 1
+    
+    # 步骤2：备份当前配置（导入失败可恢复）
+    local backup_file="/etc/jianguoyun-backup/config_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    if [ -f "$CONFIG_FILE" ]; then
+        if tar -czf "$backup_file" -C /etc/config jianguoyun-backup 2>/dev/null; then
+            log_info "已备份当前配置到: $(basename "$backup_file")"
+        else
+            log_warning "配置备份失败，继续导入"
+        fi
+    fi
+    
+    # 步骤3：解析 JSON 配置
+    # 基础配置
+    _imp_webdav_url=$(grep '"webdav_url"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_username=$(grep '"username"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_remote_root=$(grep '"remote_root"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_max_remote=$(grep '"max_remote_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
+    _imp_max_local=$(grep '"max_local_backups"' "$config_file" | sed 's/.*: *"?\([0-9]*\)"?.*/\1/')
+    _imp_backup_storage=$(grep '"backup_storage"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_keep_local=$(grep '"keep_local_backup"' "$config_file" | sed 's/.*: *"\([^"]*\)".*/\1/')
+    
+    # 提取嵌套对象内容
+    local light_section=$(sed -n '/"light_backup": {/,/},/p' "$config_file" | sed '1d;$d')
+    local full_section=$(sed -n '/"full_backup": {/,/},/p' "$config_file" | sed '1d;$d')
+    [ -z "$light_section" ] && light_section=$(grep -A20 '"light_backup"' "$config_file")
+    [ -z "$full_section" ] && full_section=$(grep -A20 '"full_backup"' "$config_file")
+    
+    # 解析轻量备份配置
+    _imp_light_enabled=$(echo "$light_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_light_schedule=$(echo "$light_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_light_time=$(echo "$light_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_light_day=$(echo "$light_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_light_day_month=$(echo "$light_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    
+    # 解析全量备份配置
+    _imp_full_enabled=$(echo "$full_section" | grep '"enabled"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_full_schedule=$(echo "$full_section" | grep '"schedule"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_full_time=$(echo "$full_section" | grep '"time"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_full_day=$(echo "$full_section" | grep '"day"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    _imp_full_day_month=$(echo "$full_section" | grep '"day_month"' | sed 's/.*: *"\([^"]*\)".*/\1/')
+    
+    # 步骤4：验证配置值
+    _validate_import_values || true  # 有警告不中断
+    
+    # 步骤5：应用配置
+    _apply_imported_config
+    
+    # 步骤6：重新设置定时任务
     setup_cron
+    
+    # 清理全局变量
+    unset _imp_webdav_url _imp_username _imp_remote_root _imp_max_remote _imp_max_local
+    unset _imp_backup_storage _imp_keep_local
+    unset _imp_light_enabled _imp_light_schedule _imp_light_time _imp_light_day _imp_light_day_month
+    unset _imp_full_enabled _imp_full_schedule _imp_full_time _imp_full_day _imp_full_day_month
     
     echo "配置导入成功"
     log_audit "import_config" "success" "配置已导入"
