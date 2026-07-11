@@ -73,6 +73,16 @@ DISK_SPACE_MARGIN=20             # 磁盘空间安全余量百分比
 CURL_RETRY=2
 CURL_TIMEOUT=30
 CURL_SSL_OPT="-k"
+# 重试间隔（秒）
+CURL_RETRY_DELAY_SHORT=2
+CURL_RETRY_DELAY_NORMAL=3
+CURL_RETRY_DELAY_LONG=5
+# 预估压缩比
+ESTIMATE_COMPRESS_RATIO=2
+# 每个插件预估大小(KB)
+ESTIMATE_PKG_SIZE_KB=80
+# 默认插件数量估算
+ESTIMATE_DEFAULT_PKG_COUNT=100
 
 # ==================== 工具函数 ====================
 
@@ -512,7 +522,6 @@ cleanup_temp_files() {
     rm -rf "$BACKUP_DIR"
     rm -rf "$RESTORE_DIR"
     rm -rf "$SNAPSHOT_DIR"
-    rm -rf "$TEMP_WORK_DIR"
     rm -f "/tmp/.webdav_test_$$"
     update_status "idle" "0" "空闲"
     release_lock
@@ -682,6 +691,94 @@ cleanup_temp() {
 
 # ==================== WebDAV 操作函数 ====================
 
+# WebDAV公共curl请求函数
+# 参数: $1=HTTP方法 $2=URL $3=输出文件(/dev/null表示丢弃) $4=额外curl参数(空格分隔)
+# 返回: 通过全局变量 WEBCDAV_HTTP_CODE 返回状态码
+# 返回值: 0=成功(2xx), 1=失败
+webdav_curl_request() {
+    local method="$1"
+    local url="$2"
+    local output_file="$3"
+    local extra_args="$4"
+    local max_time_mult="${5:-2}"
+    
+    local retry=0
+    local curl_exit=0
+    local tmp_output="/tmp/webdav_curl_$$"
+    
+    while [ "$retry" -le "$CURL_RETRY" ]; do
+        curl_exit=0
+        local http_code
+        
+        # 构造curl命令
+        http_code=$(curl -s "$CURL_SSL_OPT"             -o "$tmp_output"             -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --request "$method"             --connect-timeout "$CURL_TIMEOUT"             --max-time "$((CURL_TIMEOUT * max_time_mult))"             $extra_args             "$url" 2>/dev/null) || curl_exit=$?
+        
+        # 网络错误处理
+        if [ "$curl_exit" -ne 0 ]; then
+            local err_msg
+            err_msg=$(curl_error_msg "$curl_exit")
+            log_warning "网络错误($curl_exit): $err_msg (重试 $((retry+1))/$CURL_RETRY)"
+            retry=$((retry + 1))
+            sleep "$CURL_RETRY_DELAY_NORMAL"
+            continue
+        fi
+        
+        # HTTP状态码处理
+        case "$http_code" in
+            200|201|204|207)
+                # 成功，复制输出文件
+                if [ "$output_file" != "/dev/null" ]; then
+                    mv "$tmp_output" "$output_file" 2>/dev/null || cp "$tmp_output" "$output_file" 2>/dev/null
+                fi
+                rm -f "$tmp_output"
+                WEBDAV_HTTP_CODE="$http_code"
+                return 0
+                ;;
+            401)
+                log_error "认证失败（HTTP 401）"
+                log_error "排查建议：1) 确认账号正确 2) 使用应用独立密码（非登录密码） 3) 检查应用密码是否过期"
+                rm -f "$tmp_output"
+                WEBDAV_HTTP_CODE="$http_code"
+                return 1
+                ;;
+            403)
+                log_error "权限不足（HTTP 403）"
+                log_error "排查建议：检查账号是否有对应目录的读写权限"
+                rm -f "$tmp_output"
+                WEBDAV_HTTP_CODE="$http_code"
+                return 1
+                ;;
+            404)
+                # 404特殊处理，由调用方决定是否创建目录
+                rm -f "$tmp_output"
+                WEBDAV_HTTP_CODE="$http_code"
+                return 2
+                ;;
+            413)
+                log_error "文件过大（HTTP 413），超出服务器限制"
+                rm -f "$tmp_output"
+                WEBDAV_HTTP_CODE="$http_code"
+                return 1
+                ;;
+            500|502|503|504)
+                log_warning "服务器错误（HTTP $http_code），稍后重试 (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep "$CURL_RETRY_DELAY_LONG"
+                ;;
+            *)
+                log_warning "HTTP请求失败，状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
+                retry=$((retry + 1))
+                sleep "$CURL_RETRY_DELAY_NORMAL"
+                ;;
+        esac
+    done
+    
+    rm -f "$tmp_output"
+    log_error "请求失败，已达最大重试次数 ($CURL_RETRY 次)"
+    WEBDAV_HTTP_CODE="000"
+    return 1
+}
+
 # WebDAV创建目录
 webdav_mkdir() {
     local remote_path="$1"
@@ -702,29 +799,19 @@ webdav_mkdir() {
     
     log_info "创建远端目录: $remote_path"
     
-    local retry=0
-    while [ "$retry" -le "$CURL_RETRY" ]; do
-        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --request MKCOL             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 2))             "$url" 2>/dev/null)
-        
-        case "$http_code" in
-            201|204|405)
-                log_info "目录创建成功或已存在: $remote_path"
-                return 0
-                ;;
-            401)
-                log_error "认证失败，请检查账号密码"
-                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
-                return 1
-                ;;
-            *)
-                log_error "创建目录失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
-                retry=$((retry + 1))
-                sleep 2
-                ;;
-        esac
-    done
+    # 调用公共curl函数
+    if webdav_curl_request "MKCOL" "$url" "/dev/null" "" 2; then
+        log_info "目录创建成功或已存在: $remote_path"
+        return 0
+    fi
     
-    log_error "创建目录失败，已达最大重试次数"
+    local ret=$?
+    # 405表示目录已存在，也算成功
+    if [ "$ret" -eq 2 ] || [ "$WEBDAV_HTTP_CODE" = "405" ]; then
+        log_info "目录已存在: $remote_path"
+        return 0
+    fi
+    
     return 1
 }
 
@@ -759,65 +846,33 @@ webdav_upload() {
         return 1
     fi
     
-    local file_size=$(du -h "$local_file" | awk '{print $1}')
+    local file_size
+    file_size=$(du -h "$local_file" | awk '{print $1}')
     log_info "文件大小: $file_size"
     
-    local retry=0
-    while [ "$retry" -le "$CURL_RETRY" ]; do
-        local tmp_output="/tmp/curl_upload_$$"
-        local http_code
-        local curl_exit=0
-        
-        # 执行 curl 并捕获退出码
-        http_code=$(curl -s $CURL_SSL_OPT -o "$tmp_output" -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --upload-file "$local_file"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 10))             "$url" 2>/dev/null) || curl_exit=$?
-        
-        rm -f "$tmp_output"
-        
-        if [ "$curl_exit" -ne 0 ]; then
-            local err_msg=$(curl_error_msg $curl_exit)
-            log_error "上传失败: 网络错误 - $err_msg (重试 $((retry+1))/$CURL_RETRY)"
-            retry=$((retry + 1))
-            sleep 3
-            continue
-        fi
-        
-        case "$http_code" in
-            200|201|204)
+    # 第一次尝试上传
+    if webdav_curl_request "PUT" "$url" "/dev/null" "--upload-file "$local_file"" 10; then
+        log_success "文件上传成功: $remote_path ($file_size)"
+        return 0
+    fi
+    
+    local ret=$?
+    
+    # 404表示目录不存在，尝试创建目录后重试
+    if [ "$ret" -eq 2 ]; then
+        log_info "远端目录不存在，尝试创建..."
+        local dir_path
+        dir_path=$(dirname "$remote_path")
+        if webdav_mkdir "$dir_path"; then
+            # 目录创建成功，重新上传
+            if webdav_curl_request "PUT" "$url" "/dev/null" "--upload-file "$local_file"" 10; then
                 log_success "文件上传成功: $remote_path ($file_size)"
                 return 0
-                ;;
-            401)
-                log_error "认证失败（HTTP 401），请检查账号密码"
-                return 1
-                ;;
-            403)
-                log_error "权限不足（HTTP 403），请检查账号权限"
-                return 1
-                ;;
-            404)
-                log_info "远端目录不存在，尝试创建..."
-                local dir_path=$(dirname "$remote_path")
-                webdav_mkdir "$dir_path" || return 1
-                retry=$((retry + 1))
-                ;;
-            413)
-                log_error "文件过大（HTTP 413），超出服务器限制"
-                return 1
-                ;;
-            500|502|503|504)
-                log_error "服务器错误（HTTP $http_code），请稍后重试 (重试 $((retry+1))/$CURL_RETRY)"
-                retry=$((retry + 1))
-                sleep 5
-                ;;
-            *)
-                log_error "上传失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
-                retry=$((retry + 1))
-                sleep 3
-                ;;
-        esac
-    done
+            fi
+        fi
+    fi
     
-    log_error "文件上传失败，已达最大重试次数 ($CURL_RETRY 次)"
+    log_error "文件上传失败: $remote_path"
     return 1
 }
 
@@ -847,40 +902,25 @@ webdav_download() {
     
     log_info "下载文件: $remote_path -> $local_file"
     
-    local retry=0
-    while [ "$retry" -le "$CURL_RETRY" ]; do
-        local http_code=$(curl -s $CURL_SSL_OPT -o "$local_file" -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 10))             "$url" 2>/dev/null)
-        
-        case "$http_code" in
-            200)
-                if [ -s "$local_file" ]; then
-                    log_success "文件下载成功: $remote_path"
-                    return 0
-                else
-                    log_error "下载的文件为空"
-                    rm -f "$local_file"
-                    return 1
-                fi
-                ;;
-            401)
-                log_error "认证失败，请检查账号密码"
-                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
-                return 1
-                ;;
-            404)
-                log_error "文件不存在: $remote_path"
-                return 1
-                ;;
-            *)
-                log_error "下载失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
-                rm -f "$local_file"
-                retry=$((retry + 1))
-                sleep 3
-                ;;
-        esac
-    done
+    # 调用公共curl函数
+    if webdav_curl_request "GET" "$url" "$local_file" "" 10; then
+        # 检查文件是否为空
+        if [ -s "$local_file" ]; then
+            log_success "文件下载成功: $remote_path"
+            return 0
+        else
+            log_error "下载的文件为空"
+            rm -f "$local_file"
+            return 1
+        fi
+    fi
     
-    log_error "文件下载失败，已达最大重试次数"
+    local ret=$?
+    if [ "$ret" -eq 2 ]; then
+        log_error "文件不存在: $remote_path"
+    fi
+    
+    rm -f "$local_file"
     return 1
 }
 
@@ -904,14 +944,14 @@ webdav_list() {
     
     local retry=0
     while [ "$retry" -le "$CURL_RETRY" ]; do
-        local result=$(curl -s $CURL_SSL_OPT 
-            --user "${WEBDAV_USER}:${WEBDAV_PASS}" 
-            --request PROPFIND 
-            --header "Depth: 1" 
-            --connect-timeout $CURL_TIMEOUT 
-            --max-time $((CURL_TIMEOUT * 2)) 
+        local result=$(curl -s "$CURL_SSL_OPT" \
+            --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
+            --request PROPFIND \
+            --header "Depth: 1" \
+            --connect-timeout "$CURL_TIMEOUT" \
+            --max-time "$((CURL_TIMEOUT * 2))" \
             -w "
-%{http_code}" 
+%{http_code}" \
             "$url" 2>/dev/null)
         
         local http_code=$(echo "$result" | tail -n1)
@@ -929,7 +969,7 @@ webdav_list() {
                 else
                     log_error "目录列表解析失败，响应格式异常"
                     retry=$((retry + 1))
-                    sleep 2
+                    sleep "$CURL_RETRY_DELAY_SHORT"
                 fi
                 ;;
             401)
@@ -944,12 +984,12 @@ webdav_list() {
             000)
                 log_error "网络连接失败 (重试 $((retry+1))/$CURL_RETRY)"
                 retry=$((retry + 1))
-                sleep 3
+                sleep "$CURL_RETRY_DELAY_NORMAL"
                 ;;
             *)
                 log_error "列出目录失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
                 retry=$((retry + 1))
-                sleep 2
+                sleep "$CURL_RETRY_DELAY_SHORT"
                 ;;
         esac
     done
@@ -975,7 +1015,8 @@ webdav_delete() {
     fi
     
     # 验证文件名（最后一部分）
-    local file_name=$(basename "$remote_path")
+    local file_name
+    file_name=$(basename "$remote_path")
     if [ -n "$file_name" ] && [ "$file_name" != "." ] && [ "$file_name" != ".." ]; then
         if ! validate_filename "$file_name" 2>/dev/null; then
             # 如果不是纯文件名（可能是目录），只检查路径遍历
@@ -990,35 +1031,21 @@ webdav_delete() {
     
     log_info "删除远端文件: $remote_path"
     
-    local retry=0
-    while [ "$retry" -le "$CURL_RETRY" ]; do
-        local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}"             --user "${WEBDAV_USER}:${WEBDAV_PASS}"             --request DELETE             --connect-timeout $CURL_TIMEOUT             --max-time $((CURL_TIMEOUT * 2))             "$url" 2>/dev/null)
-        
-        case "$http_code" in
-            200|204)
-                log_info "文件删除成功: $remote_path"
-                return 0
-                ;;
-            404)
-                log_info "文件不存在: $remote_path"
-                return 0
-                ;;
-            401)
-                log_error "认证失败，请检查账号密码"
-                log_error "请确认：1) 账号是否正确 2) 是否使用的是应用独立密码（非登录密码） 3) 应用密码是否已过期"
-                return 1
-                ;;
-            *)
-                log_error "删除文件失败，HTTP状态码: $http_code (重试 $((retry+1))/$CURL_RETRY)"
-                retry=$((retry + 1))
-                sleep 2
-                ;;
-        esac
-    done
+    # 调用公共curl函数
+    if webdav_curl_request "DELETE" "$url" "/dev/null" "" 2; then
+        log_info "文件删除成功: $remote_path"
+        return 0
+    fi
     
-    log_error "删除文件失败，已达最大重试次数"
+    local ret=$?
+    if [ "$ret" -eq 2 ]; then
+        log_warning "文件不存在，删除跳过: $remote_path"
+        return 0
+    fi
+    
     return 1
 }
+
 
 # ==================== 连接测试 ====================
 
@@ -1034,7 +1061,13 @@ test_connection() {
     
     # 测试认证
     local test_url="${WEBDAV_URL%/}/${REMOTE_ROOT}"
-    local http_code=$(curl -s $CURL_SSL_OPT -o /dev/null -w "%{http_code}"         --user "${WEBDAV_USER}:${WEBDAV_PASS}"         --request PROPFIND         --header "Depth: 0"         --connect-timeout $CURL_TIMEOUT         --max-time $((CURL_TIMEOUT * 2))         "$test_url" 2>/dev/null)
+    local http_code=$(curl -s "$CURL_SSL_OPT" -o /dev/null -w "%{http_code}" \
+        --user "${WEBDAV_USER}:${WEBDAV_PASS}" \
+        --request PROPFIND \
+        --header "Depth: 0" \
+        --connect-timeout "$CURL_TIMEOUT" \
+        --max-time "$((CURL_TIMEOUT * 2))" \
+        "$test_url" 2>/dev/null)
     
     case "$http_code" in
         207)
@@ -1196,10 +1229,9 @@ cleanup_remote_backups() {
     
     log_info "清理云端${type}旧备份，保留最近 $max_count 个"
     
-    local files=$(webdav_list "${REMOTE_ROOT}/${type}" 2>/dev/null | sort -r)
     local count=0
     
-    for file in $files; do
+    webdav_list "${REMOTE_ROOT}/${type}" 2>/dev/null | sort -r | while read -r file; do
         count=$((count + 1))
         if [ "$count" -gt "$max_count" ]; then
             webdav_delete "${REMOTE_ROOT}/${type}/${file}"
@@ -1635,11 +1667,16 @@ restore_plugin_config() {
     
     log_info "恢复插件配置"
     
-    restore_plugin_config_all "$backup_dir"
-    restore_plugin_appdata_all "$backup_dir"
+    local ret=0
+    restore_plugin_config_all "$backup_dir" || ret=$?
+    restore_plugin_appdata_all "$backup_dir" || ret=$((ret + $?))
     
-    log_success "插件配置恢复完成"
-    return 0
+    if [ "$ret" -eq 0 ]; then
+        log_success "插件配置恢复完成"
+    else
+        log_warning "插件配置恢复部分失败"
+    fi
+    return "$ret"
 }
 
 # 恢复所有插件的UCI配置
@@ -2337,10 +2374,14 @@ $minute $hour $FULL_DAY_MONTH * * /usr/bin/jianguoyun-backup.sh full_backup"
     fi
     
     # 去除空行，写回 crontab
-    echo "$new_cron" | grep -v '^$' | crontab - 2>/dev/null
+    if echo "$new_cron" | grep -v '^$' | crontab - 2>/dev/null; then
+        log_info "定时任务写入成功"
+    else
+        log_error "定时任务写入失败，请检查crontab权限"
+    fi
     
     # 重启cron服务
-    /etc/init.d/cron restart 2>/dev/null
+    /etc/init.d/cron restart 2>/dev/null || log_warning "cron服务重启失败，定时任务可能不立即生效"
     
     log_info "定时任务设置完成"
     return 0
