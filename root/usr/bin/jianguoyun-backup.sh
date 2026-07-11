@@ -1108,7 +1108,12 @@ test_connection() {
 generate_plugin_list() {
     log_info "生成已安装插件清单"
     if list_installed_packages > "$BACKUP_DIR/plugin_data/plugin_list.txt" 2>/dev/null; then
-        log_info "插件清单生成成功，共 $(wc -l < "$BACKUP_DIR/plugin_data/plugin_list.txt") 个插件"
+        local plugin_count=$(wc -l < "$BACKUP_DIR/plugin_data/plugin_list.txt")
+        if [ "$plugin_count" -eq 0 ]; then
+            log_warning "警告：未检测到任何已安装插件，插件清单为空"
+        else
+            log_info "插件清单生成成功，共 $plugin_count 个插件"
+        fi
     else
         log_error "插件清单生成失败"
         echo "无法获取插件列表" > "$BACKUP_DIR/plugin_data/plugin_list.txt"
@@ -1204,16 +1209,21 @@ cleanup_remote_backups() {
     local max_count="$2"
     
     log_info "清理云端${type}旧备份，保留最近 $max_count 个"
+    local deleted=0
+    local total=0
     
     local count=0
     
     webdav_list "${REMOTE_ROOT}/${type}" 2>/dev/null | sort -r | while read -r file; do
         count=$((count + 1))
+        total=$((total + 1))
         if [ "$count" -gt "$max_count" ]; then
             webdav_delete "${REMOTE_ROOT}/${type}/${file}"
             log_info "删除云端旧备份: $file"
+            deleted=$((deleted + 1))
         fi
     done
+    log_info "云端${type}备份清理完成：共 $total 个，删除 $deleted 个，保留 $((total - deleted)) 个"
 }
 
 # 执行轻量备份
