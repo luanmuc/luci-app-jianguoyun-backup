@@ -672,7 +672,9 @@
                             <div class="plugin-list-header">
                                 <button class="btn-mini" onclick="selectAllPlugins('config', true)">全选</button>
                                 <button class="btn-mini" onclick="selectAllPlugins('config', false)">全不选</button>
+                                <button class="btn-mini" onclick="invertPlugins('config')">反选</button>
                                 <button class="btn-mini" onclick="loadPluginList('config')">刷新列表</button>
+                                <span style="margin-left:auto;font-size:12px;color:#6b7280;" id="configCount">已选: 0</span>
                             </div>
                             <div class="plugin-list-container" id="pluginConfigListContainer">
                                 <div class="plugin-list-loading">点击"刷新列表"加载插件...</div>
@@ -690,7 +692,9 @@
                             <div class="plugin-list-header">
                                 <button class="btn-mini" onclick="selectAllPlugins('appdata', true)">全选</button>
                                 <button class="btn-mini" onclick="selectAllPlugins('appdata', false)">全不选</button>
+                                <button class="btn-mini" onclick="invertPlugins('appdata')">反选</button>
                                 <button class="btn-mini" onclick="loadPluginList('appdata')">刷新列表</button>
+                                <span style="margin-left:auto;font-size:12px;color:#6b7280;" id="appdataCount">已选: 0</span>
                             </div>
                             <div class="plugin-list-container" id="pluginAppdataListContainer">
                                 <div class="plugin-list-loading">点击"刷新列表"加载插件...</div>
@@ -760,7 +764,9 @@
                             <div class="plugin-list-header">
                                 <button class="btn-mini" onclick="selectAllPlugins('config', true)">全选</button>
                                 <button class="btn-mini" onclick="selectAllPlugins('config', false)">全不选</button>
+                                <button class="btn-mini" onclick="invertPlugins('config')">反选</button>
                                 <button class="btn-mini" onclick="loadPluginList('config')">刷新列表</button>
+                                <span style="margin-left:auto;font-size:12px;color:#6b7280;" id="configCount">已选: 0</span>
                             </div>
                             <div class="plugin-list-container" id="pluginConfigListContainerFull">
                                 <div class="plugin-list-loading">点击"刷新列表"加载插件...</div>
@@ -777,7 +783,9 @@
                             <div class="plugin-list-header">
                                 <button class="btn-mini" onclick="selectAllPlugins('appdata', true)">全选</button>
                                 <button class="btn-mini" onclick="selectAllPlugins('appdata', false)">全不选</button>
+                                <button class="btn-mini" onclick="invertPlugins('appdata')">反选</button>
                                 <button class="btn-mini" onclick="loadPluginList('appdata')">刷新列表</button>
+                                <span style="margin-left:auto;font-size:12px;color:#6b7280;" id="appdataCount">已选: 0</span>
                             </div>
                             <div class="plugin-list-container" id="pluginAppdataListContainerFull">
                                 <div class="plugin-list-loading">点击"刷新列表"加载插件...</div>
@@ -1318,6 +1326,43 @@ function onPluginCheckChange() {
 document.addEventListener('DOMContentLoaded', function() {
     loadBackups();
 });
+
+// 反选插件
+function invertPlugins(type) {
+    var suffix = currentTab === 'light' ? '' : 'Full';
+    var listId = type === 'config' ? 'pluginConfigList' : 'pluginAppdataList';
+    var listEl = document.getElementById(listId + suffix);
+    if (!listEl) return;
+    
+    var checkboxes = listEl.querySelectorAll('.plugin-checkbox');
+    for (var i = 0; i < checkboxes.length; i++) {
+        checkboxes[i].checked = !checkboxes[i].checked;
+    }
+    updatePluginCount(type);
+    updateCustomOptions();
+}
+
+// 更新选中插件计数
+function updatePluginCount(type) {
+    var suffix = currentTab === 'light' ? '' : 'Full';
+    var countId = type === 'config' ? 'configCount' : 'appdataCount';
+    var countEl = document.getElementById(countId + suffix);
+    if (!countEl) return;
+    
+    var selected = getSelectedPlugins(type).length;
+    var total = getTotalPlugins(type);
+    countEl.textContent = '已选: ' + selected + '/' + total;
+}
+
+// 加载插件列表后更新计数
+var _origRenderPluginList = renderPluginList;
+if (_origRenderPluginList) {
+    renderPluginList = function(type, plugins) {
+        _origRenderPluginList(type, plugins);
+        updatePluginCount(type);
+    };
+}
+
 </script>
 
 <%+footer%>
