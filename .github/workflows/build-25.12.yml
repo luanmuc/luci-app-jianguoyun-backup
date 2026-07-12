@@ -447,7 +447,7 @@ jobs:
           ls -la
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: release/*.apk
           generate_release_notes: true
@@ -491,7 +491,7 @@ jobs:
           ls -la
       
       - name: 发布到 Releases（最新版）
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-25.12
           name: "OpenWrt 25.12 最新版"
