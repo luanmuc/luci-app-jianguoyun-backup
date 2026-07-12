@@ -430,7 +430,7 @@ jobs:
           ls -la
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: release/*.ipk
           generate_release_notes: true
@@ -474,7 +474,7 @@ jobs:
           ls -la
       
       - name: 发布到 Releases（最新版）
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: latest-24.10
           name: "OpenWrt 24.10 最新版"
