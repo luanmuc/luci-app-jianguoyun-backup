@@ -404,7 +404,7 @@ jobs:
     
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ env.PLUGIN_NAME }}_24.10_ipk_all
           path: release
@@ -449,7 +449,7 @@ jobs:
     
     steps:
       - name: 下载编译好的安装包
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ env.PLUGIN_NAME }}_24.10_ipk_all
           path: release-pkg
