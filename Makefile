@@ -113,6 +113,9 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 	fi
 	# Clean up cron jobs
 	crontab -l 2>/dev/null | grep -v "jianguoyun-backup" | crontab - 2>/dev/null || true
+	# Clean up lock and status files
+	rm -rf /var/run/jianguoyun-backup.lock 2>/dev/null || true
+	rm -f /var/run/jianguoyun-backup.status 2>/dev/null || true
 fi
 exit 0
 endef
@@ -120,10 +123,10 @@ endef
 define Package/$(PKG_NAME)/postrm
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	# Note: Configuration and backup files are preserved by default
-	# To completely remove everything, run:
-	#   rm -rf /etc/jianguoyun-backup
-	#   rm -f /etc/config/jianguoyun-backup
+	echo "Note: Configuration and backup files have been preserved."
+	echo "To completely remove all data, run:"
+	echo "  rm -rf /etc/jianguoyun-backup"
+	echo "  rm -f /etc/config/jianguoyun-backup"
 	rm -f /tmp/luci-indexcache
 fi
 exit 0

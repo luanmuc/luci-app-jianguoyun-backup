@@ -485,34 +485,37 @@ estimate_backup_size() {
 
 # 获取锁（防止并发执行）- 使用mkdir原子操作
 acquire_lock() {
-    # 尝试创建锁目录（原子操作）
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-        # 获取锁成功，写入PID
-        echo $$ > "$LOCK_DIR/pid"
-        return 0
-    fi
+    # 尝试创建锁目录（原子操作），最多重试3次
+    local max_retries=3
+    local retry=0
     
-    # 获取锁失败，检查是否是过期的锁
-    local pid=""
-    if [ -f "$LOCK_DIR/pid" ]; then
-        pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-    fi
-    
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        log_error "另一个备份/恢复进程正在运行 (PID: $pid)，请稍后再试"
-        return 1
-    else
-        # 锁已过期，清理后重新尝试
-        log_info "清理过期的锁文件"
-        rm -rf "$LOCK_DIR"
+    while [ $retry -lt $max_retries ]; do
         if mkdir "$LOCK_DIR" 2>/dev/null; then
+            # 获取锁成功，写入PID
             echo $$ > "$LOCK_DIR/pid"
             return 0
-        else
-            log_error "获取锁失败"
-            return 1
         fi
-    fi
+        
+        # 获取锁失败，检查是否是过期的锁
+        local pid=""
+        if [ -f "$LOCK_DIR/pid" ]; then
+            pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+        fi
+        
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            log_error "另一个备份/恢复进程正在运行 (PID: $pid)，请稍后再试"
+            return 1
+        else
+            # 锁已过期，清理后重新尝试
+            log_info "清理过期的锁文件 (重试 $((retry + 1))/$max_retries)"
+            rm -rf "$LOCK_DIR"
+            retry=$((retry + 1))
+            sleep 1
+        fi
+    done
+    
+    log_error "获取锁失败，已重试 $max_retries 次"
+    return 1
 }
 
 # 释放锁
@@ -523,6 +526,9 @@ release_lock() {
 
 # 清理临时文件（异常退出时也会执行）
 cleanup_temp_files() {
+    # 确保日志写入磁盘
+    sync 2>/dev/null || true
+    
     rm -rf "$BACKUP_DIR"
     rm -rf "$RESTORE_DIR"
     rm -rf "$SNAPSHOT_DIR"
