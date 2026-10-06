@@ -83,6 +83,12 @@ function action_test_connection()
     end
     
     -- 临时写入UCI用于测试（使用UCI库，避免命令注入）
+    -- 先保存旧值，测试失败时恢复
+    local old_webdav_url = uci:get("jianguoyun-backup", "global", "webdav_url") or ""
+    local old_username = uci:get("jianguoyun-backup", "global", "username") or ""
+    local old_password = uci:get("jianguoyun-backup", "global", "password") or ""
+    local old_remote_root = uci:get("jianguoyun-backup", "global", "remote_root") or "OpenWrt_Backup"
+    
     if webdav_url ~= "" and username ~= "" and password ~= "" then
         -- 加密密码后存储
         local encrypted_pass = encrypt_password(password)
@@ -96,6 +102,17 @@ function action_test_connection()
     
     -- 执行测试
     local result = sys.exec("/usr/bin/jianguoyun-backup.sh test 2>&1")
+    
+    -- 如果测试失败且我们修改了配置，恢复旧值
+    if webdav_url ~= "" and username ~= "" and password ~= "" then
+        if result:find("^ERROR") then
+            uci:set("jianguoyun-backup", "global", "webdav_url", old_webdav_url)
+            uci:set("jianguoyun-backup", "global", "username", old_username)
+            uci:set("jianguoyun-backup", "global", "password", old_password)
+            uci:set("jianguoyun-backup", "global", "remote_root", old_remote_root)
+            uci:commit("jianguoyun-backup")
+        end
+    end
     
     http.prepare_content("text/plain; charset=utf-8")
     http.write(result)
@@ -440,8 +457,8 @@ function action_import_config()
         return
     end
     
-    -- 写入临时文件
-    local tmpfile = "/tmp/jianguoyun_import_" .. os.time() .. ".json"
+    -- 写入临时文件（加随机数防止并发冲突和预测）
+    local tmpfile = "/tmp/jianguoyun_import_" .. os.time() .. "_" .. math.random(10000, 99999) .. ".json"
     local f = io.open(tmpfile, "w")
     if f then
         f:write(filecontent)

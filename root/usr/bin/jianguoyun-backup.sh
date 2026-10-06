@@ -463,7 +463,7 @@ estimate_backup_size() {
     # 如果是全量备份，加上已安装插件包的预估大小
     if [ "$type" = "full" ]; then
         # 检测包管理器并统计已安装包数量
-        detect_pkg_manager
+        detect_package_manager
         local pkg_count=$(list_installed_packages | wc -l)
         
         if [ "$pkg_count" -gt 0 ]; then
@@ -1217,10 +1217,14 @@ cleanup_remote_backups() {
     log_info "清理云端${type}旧备份，保留最近 $max_count 个"
     local deleted=0
     local total=0
-    
     local count=0
     
-    webdav_list "${REMOTE_ROOT}/${type}" 2>/dev/null | sort -r | while read -r file; do
+    # 先将列表写入临时文件，避免管道子shell导致变量丢失
+    local tmp_list="/tmp/jgy_cleanup_$$"
+    webdav_list "${REMOTE_ROOT}/${type}" 2>/dev/null | sort -r > "$tmp_list"
+    
+    while read -r file; do
+        [ -z "$file" ] && continue
         count=$((count + 1))
         total=$((total + 1))
         if [ "$count" -gt "$max_count" ]; then
@@ -1228,7 +1232,9 @@ cleanup_remote_backups() {
             log_info "删除云端旧备份: $file"
             deleted=$((deleted + 1))
         fi
-    done
+    done < "$tmp_list"
+    rm -f "$tmp_list"
+    
     log_info "云端${type}备份清理完成：共 $total 个，删除 $deleted 个，保留 $((total - deleted)) 个"
 }
 
@@ -1284,7 +1290,7 @@ do_light_backup() {
     
     # 统计备份文件数量和原始大小
     BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
-    BACKUP_TOTAL_SIZE=$(du -sb "$BACKUP_DIR" 2>/dev/null | awk "{print $1}")
+    BACKUP_TOTAL_SIZE=$(du -sk "$BACKUP_DIR" 2>/dev/null | awk '{print $1 * 1024}')
     log_info "备份统计：共 $BACKUP_FILE_COUNT 个文件，原始大小 $((BACKUP_TOTAL_SIZE / 1024)) KB"
     if tar czf "$local_file" system_config plugin_data 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
@@ -1417,7 +1423,7 @@ do_full_backup() {
     
     # 统计备份文件数量和原始大小
     BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
-    BACKUP_TOTAL_SIZE=$(du -sb "$BACKUP_DIR" 2>/dev/null | awk "{print $1}")
+    BACKUP_TOTAL_SIZE=$(du -sk "$BACKUP_DIR" 2>/dev/null | awk '{print $1 * 1024}')
     log_info "备份统计：共 $BACKUP_FILE_COUNT 个文件，原始大小 $((BACKUP_TOTAL_SIZE / 1024)) KB"
     if tar czf "$local_file" system_config plugin_data plugin_bin 2>/dev/null && [ -s "$local_file" ]; then
         local size=$(du -h "$local_file" | awk '{print $1}')
@@ -1502,15 +1508,20 @@ cleanup_local_backups() {
     log_info "清理本地${type}旧备份，保留最近 $MAX_LOCAL_BACKUPS 个"
     
     local count=0
+    local tmp_list="/tmp/jgy_local_cleanup_$$"
     
-    ls -t "$LOCAL_BACKUP_DIR"/${type}_*.tar.gz 2>/dev/null | while read -r file; do
+    ls -t "$LOCAL_BACKUP_DIR"/${type}_*.tar.gz 2>/dev/null > "$tmp_list"
+    
+    while read -r file; do
+        [ -z "$file" ] && continue
         count=$((count + 1))
         if [ "$count" -gt "$MAX_LOCAL_BACKUPS" ]; then
             rm -f "$file"
             rm -f "${file}.md5"
             log_info "删除旧备份: $(basename "$file")"
         fi
-    done
+    done < "$tmp_list"
+    rm -f "$tmp_list"
 }
 
 # ==================== 恢复功能 ====================
@@ -1565,16 +1576,20 @@ cleanup_snapshots() {
     
     log_info "清理旧快照，保留最近 $MAX_SNAPSHOTS 个"
     
-    # 按时间排序，删除超过保留数量的旧快照
     local count=0
+    local tmp_list="/tmp/jgy_snap_cleanup_$$"
     
-    ls -t "$SNAPSHOT_STORAGE_DIR"/snapshot_*.tar.gz 2>/dev/null | while read -r file; do
+    ls -t "$SNAPSHOT_STORAGE_DIR"/snapshot_*.tar.gz 2>/dev/null > "$tmp_list"
+    
+    while read -r file; do
+        [ -z "$file" ] && continue
         count=$((count + 1))
         if [ "$count" -gt "$MAX_SNAPSHOTS" ]; then
             rm -f "$file"
             log_info "删除旧快照: $(basename "$file")"
         fi
-    done
+    done < "$tmp_list"
+    rm -f "$tmp_list"
     
     return 0
 }
@@ -2129,6 +2144,7 @@ do_restore() {
     local type="$1"
     local filename="$2"
     local mode="$3"
+    local custom_options="${4:-}"
     
     # 参数验证 - 防止路径遍历和注入
     case "$type" in
@@ -2147,7 +2163,7 @@ do_restore() {
     
     # 验证恢复模式
     case "$mode" in
-        system_only|system_plugins|full_offline) ;;
+        system_only|system_plugins|full_offline|plugin_config_only|reinstall_only|custom) ;;
         *)
             log_error "无效的恢复模式: $mode"
             return 1
@@ -2253,8 +2269,10 @@ do_restore() {
             offline_install_plugins "$RESTORE_DIR"
             ;;
         custom)
-            # 自定义恢复（第4个参数是 options）
-            local custom_options="${4:-system=1,config=all,appdata=all,reinstall=0}"
+            # 自定义恢复（options 已作为第4个参数传入）
+            if [ -z "$custom_options" ]; then
+                custom_options="system=1,config=all,appdata=all,reinstall=0"
+            fi
             update_status "running" "60" "执行自定义恢复..."
             do_restore_custom "$RESTORE_DIR" "$custom_options"
             ;;
@@ -2738,7 +2756,7 @@ case "$1" in
         ;;
     restore)
         acquire_lock || exit 1
-        do_restore "$2" "$3" "$4"
+        do_restore "$2" "$3" "$4" "$5"
         ;;
     setup_cron)
         setup_cron
